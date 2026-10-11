@@ -34,6 +34,13 @@ cp sdkconfig.credentials.example sdkconfig.credentials
 
 Or set via `idf.py menuconfig` → MicroLink V2 → Credentials.
 
+Each example's `CMakeLists.txt` adds `sdkconfig.credentials` to
+`SDKCONFIG_DEFAULTS` automatically when the file exists, so the values are
+applied on the next sdkconfig generation (the first build picks them up). If
+`sdkconfig` already exists, its values win over defaults files — delete it to
+regenerate, or use menuconfig. Explicit override (CI-style):
+`idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.credentials" build`.
+
 ## Architecture
 
 Five FreeRTOS tasks communicating via queues — no shared mutable state, no mutexes between tasks:
@@ -139,6 +146,7 @@ echo "ping" | nc -u <ESP32_VPN_IP> 9000 # UDP echo test
 - WiFi power save must be disabled (`WIFI_PS_NONE`) for low-latency WireGuard traffic
 - Auth keys must be **reusable** for development (single-use keys expire after first registration)
 - New Kconfig options stay **off** in an existing generated `sdkconfig` — after pulling options like `ML_PROV_ENABLE_SOFTAP`, delete `sdkconfig` (regenerates from `sdkconfig.defaults`) or set them in `menuconfig`
+- `sdkconfig.credentials` is wired into sdkconfig generation by each example's CMakeLists (only when the file exists and `SDKCONFIG_DEFAULTS` is not already set) — existing `sdkconfig` values still win: delete `sdkconfig` after editing credentials, or use menuconfig
 - Setup mode owns port 80: call `ml_prov_stop()` before `microlink_start()`; the setup UI at `192.168.4.1` has no auth (set `ML_PROV_AP_PASSWORD` for public deployments)
 - Captive-portal webviews block JS dialogs (`confirm`/`alert` return false / no-op) — never gate actions like restart on them in `ml_config_html.h`; use inline two-step confirmation instead
 - `ml_config` NVS semantics: an existing-but-empty `wifi_list` key is authoritative — boot must not fall back to the `settings` blob (`wifi_ssid` there resurrects cleared networks); saving an empty list also clears the settings blob

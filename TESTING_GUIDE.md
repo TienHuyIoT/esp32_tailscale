@@ -53,6 +53,13 @@ Use the `lilygo_sim7670g` example — pin configuration is preset in sdkconfig.d
 
 3. Or set interactively: `idf.py menuconfig` → MicroLink V2 → Credentials
 
+> **Note:** the example's CMakeLists wires `sdkconfig.credentials` into
+> `SDKCONFIG_DEFAULTS` automatically when the file exists, so a **first build**
+> (no `sdkconfig` yet) applies it as-is. If `sdkconfig` already exists, its
+> values take precedence — delete `sdkconfig` to regenerate, or set the values
+> via menuconfig. Explicit override (CI-style):
+> `idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.credentials" build`
+
 ## Build & Flash
 
 ```bash
