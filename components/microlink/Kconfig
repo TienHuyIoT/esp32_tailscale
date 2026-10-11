@@ -336,4 +336,60 @@ menu "MicroLink V2 Configuration"
 
     endmenu
 
+    menu "WiFi Setup Mode (SoftAP provisioning)"
+        depends on ML_ENABLE_CONFIG_HTTPD
+
+        config ML_PROV_ENABLE_SOFTAP
+            bool "Enable SoftAP setup mode fallback"
+            default n
+            help
+                When the device cannot connect to any known WiFi network, the
+                application can bring up a setup AP (default 192.168.4.1) that
+                serves the config web UI plus a captive-portal DNS responder,
+                so WiFi credentials can be added from a phone/laptop without
+                reflashing.
+
+                The application calls ml_prov_start() after its own WiFi
+                timeout — see examples/basic_connect. Requires
+                ML_ENABLE_CONFIG_HTTPD (the setup AP serves that web UI).
+
+        config ML_PROV_AP_SSID_PREFIX
+            string "Setup AP SSID prefix"
+            depends on ML_PROV_ENABLE_SOFTAP
+            default "MicroLink-Setup"
+            help
+                SSID prefix of the setup AP. The last three MAC bytes are
+                appended, e.g. "MicroLink-Setup-a1b2c3" (32 chars max total).
+
+        config ML_PROV_AP_PASSWORD
+            string "Setup AP password (empty = open network)"
+            depends on ML_PROV_ENABLE_SOFTAP
+            default ""
+            help
+                WPA2 password of the setup AP. Empty = open network (easiest
+                for captive-portal onboarding). If set, use at least 8 chars.
+
+                NOTE: the setup web UI has no authentication — anyone on the
+                AP can change settings. Set a password when the device is
+                deployed somewhere public.
+
+        config ML_PROV_AP_CHANNEL
+            int "Setup AP channel"
+            depends on ML_PROV_ENABLE_SOFTAP
+            default 1
+            range 1 13
+            help
+                WiFi channel for the setup AP.
+
+        config ML_PROV_STA_TIMEOUT_S
+            int "Seconds to wait for WiFi before setup mode"
+            depends on ML_PROV_ENABLE_SOFTAP
+            default 60
+            range 15 600
+            help
+                How long the application waits for a WiFi connection before
+                entering setup mode. Used by examples/basic_connect.
+
+    endmenu
+
 endmenu

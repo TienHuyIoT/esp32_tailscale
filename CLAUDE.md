@@ -1,19 +1,19 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Agents Code when working with code in this repository.
 
 ## Build & Flash
 
 ```bash
 # Source ESP-IDF first (required every session)
-source ~/esp/esp-idf/export.sh
+. 'C:\Espressif\tools\Microsoft.v6.1.PowerShell_profile.ps1'
 
 # Build an example
 cd examples/basic_connect   # or: cellular_connect, cellular_heartbeat, failover_connect, rebind_test
 idf.py build
 
 # Flash + monitor
-idf.py -p /dev/ttyACM0 flash monitor
+idf.py -p COM9 flash monitor
 
 # Clean build (required after pin/config changes)
 idf.py fullclean && idf.py build
@@ -57,6 +57,7 @@ components/microlink/
     ml_cellular.h         — Cellular modem (PPP + AT socket bridge)
     ml_net_switch.h       — WiFi/cellular failover state machine
     ml_config_httpd.h     — HTTP config server (ifdef-gated)
+    ml_prov.h             — SoftAP setup mode API (ifdef-gated)
   src/
     microlink.c           — Init, start, stop, destroy, callbacks, rebind
     ml_coord.c            — Tailscale control plane (ts2021, HTTP/2, MapResponse)
@@ -71,6 +72,7 @@ components/microlink/
     ml_at_socket.c        — AT command socket bridge (slow path)
     ml_net_switch.c       — WiFi/cellular switching, health monitoring, rebind
     ml_config_httpd.c     — Web UI + REST API
+    ml_prov.c             — SoftAP setup mode (provisioning fallback + captive portal)
     ml_zerocopy.c         — Zero-copy WG receive via raw lwIP PCB
     nacl_box.c / x25519.c — Crypto primitives
   components/wireguard_lwip/
@@ -112,6 +114,10 @@ CONFIG_LWIP_IP4_REASSEMBLY=y
 
 # Stack
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Setup mode (optional; enabled in examples/basic_connect)
+CONFIG_ML_PROV_ENABLE_SOFTAP=y
+CONFIG_ML_PROV_STA_TIMEOUT_S=60
 ```
 
 ## Testing
@@ -132,6 +138,10 @@ echo "ping" | nc -u <ESP32_VPN_IP> 9000 # UDP echo test
 - `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY` does not exist in recent ESP-IDF — use `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` instead
 - WiFi power save must be disabled (`WIFI_PS_NONE`) for low-latency WireGuard traffic
 - Auth keys must be **reusable** for development (single-use keys expire after first registration)
+- New Kconfig options stay **off** in an existing generated `sdkconfig` — after pulling options like `ML_PROV_ENABLE_SOFTAP`, delete `sdkconfig` (regenerates from `sdkconfig.defaults`) or set them in `menuconfig`
+- Setup mode owns port 80: call `ml_prov_stop()` before `microlink_start()`; the setup UI at `192.168.4.1` has no auth (set `ML_PROV_AP_PASSWORD` for public deployments)
+- Captive-portal webviews block JS dialogs (`confirm`/`alert` return false / no-op) — never gate actions like restart on them in `ml_config_html.h`; use inline two-step confirmation instead
+- `ml_config` NVS semantics: an existing-but-empty `wifi_list` key is authoritative — boot must not fall back to the `settings` blob (`wifi_ssid` there resurrects cleared networks); saving an empty list also clears the settings blob
 
 ## Agent skills
 

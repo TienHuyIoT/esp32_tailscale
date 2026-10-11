@@ -1,0 +1,11 @@
+# ESP-IDF Partition Table
+# MicroLink v2 — 4 MB flash, dual-OTA app layout
+# nvs 128 KB: ml_config allowlist + ml_peers cache; app slots: 1.5 MB each.
+# Pair with: CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+# Name,   Type, SubType, Offset,   Size, Flags
+nvs,      data, nvs,     0x9000,   0x20000,
+otadata,  data, ota,     0x29000,  0x2000,
+phy_init, data, phy,     0x2b000,  0x1000,
+ota_0,    app,  ota_0,   0x30000,  0x180000,
+ota_1,    app,  ota_1,   ,         0x180000,
+assets,   data, spiffs,  0x330000, 0xd0000,

@@ -21,6 +21,7 @@
 #include "esp_system.h"
 #include "esp_heap_caps.h"
 #include "esp_wifi.h"
+#include "esp_netif.h"
 #include "esp_timer.h"
 #if CONFIG_SOC_TEMP_SENSOR_SUPPORTED
 #include "driver/temperature_sensor.h"
@@ -31,6 +32,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include <string.h>
+#include <stdio.h>
 #ifdef CONFIG_ML_ENABLE_CELLULAR
 #include "ml_at_socket.h"
 #endif
@@ -385,6 +387,15 @@ static char *read_post_body(httpd_req_t *req) {
     return buf;
 }
 
+/* Format an esp_netif IPv4 address (stored in network byte order) as "a.b.c.d" */
+static void netif_ip4_to_str(const esp_ip4_addr_t *addr, char *buf, size_t len) {
+    snprintf(buf, len, "%u.%u.%u.%u",
+             (unsigned)(addr->addr & 0xFF),
+             (unsigned)((addr->addr >> 8) & 0xFF),
+             (unsigned)((addr->addr >> 16) & 0xFF),
+             (unsigned)((addr->addr >> 24) & 0xFF));
+}
+
 /* GET / — serve HTML config page */
 static esp_err_t handler_root(httpd_req_t *req) {
     httpd_resp_set_type(req, "text/html");
@@ -412,6 +423,25 @@ static esp_err_t handler_status(httpd_req_t *req) {
         cJSON_AddNumberToObject(json, "peer_count", microlink_get_peer_count(ml));
         cJSON_AddStringToObject(json, "hostname", ml->config.device_name ? ml->config.device_name : "");
     }
+
+    /* Operating mode: "provisioning" = setup-AP mode (httpd without a VPN) */
+    cJSON_AddStringToObject(json, "mode", ml ? "vpn" : "provisioning");
+
+    /* LAN IP — WiFi STA when it has one, else the setup-AP IP (192.168.4.1
+     * while in provisioning mode). Answers "how do I reach it on the LAN?"
+     * both from the web UI and from `curl http://<vpn-ip>/api/status`. */
+    char lan_buf[16] = "";
+    esp_netif_ip_info_t ip_info;
+    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (sta_netif && esp_netif_get_ip_info(sta_netif, &ip_info) == ESP_OK && ip_info.ip.addr != 0) {
+        netif_ip4_to_str(&ip_info.ip, lan_buf, sizeof(lan_buf));
+    } else {
+        esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+        if (ap_netif && esp_netif_get_ip_info(ap_netif, &ip_info) == ESP_OK && ip_info.ip.addr != 0) {
+            netif_ip4_to_str(&ip_info.ip, lan_buf, sizeof(lan_buf));
+        }
+    }
+    cJSON_AddStringToObject(json, "wifi_ip", lan_buf);
 
     cJSON_AddNumberToObject(json, "free_heap", esp_get_free_heap_size());
     cJSON_AddNumberToObject(json, "free_psram",
@@ -786,6 +816,7 @@ static esp_err_t handler_monitor(httpd_req_t *req) {
 
 /* POST /api/restart */
 static esp_err_t handler_restart(httpd_req_t *req) {
+    ESP_LOGW(TAG, "Restart requested via web UI");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true,\"restarting\":true}");
 
@@ -882,14 +913,16 @@ static esp_err_t handler_post_wifi(httpd_req_t *req) {
     }
     cJSON_Delete(json);
 
-    /* Update settings blob wifi_ssid/wifi_pass with entry[0] for backwards compat */
+    /* Sync settings blob wifi_ssid/wifi_pass with entry[0] for backwards compat.
+     * Runs even when the list became EMPTY: the blob must be cleared too, or
+     * the boot-time settings fallback would resurrect the removed network. */
+    memset(ctx->settings.wifi_ssid, 0, sizeof(ctx->settings.wifi_ssid));
+    memset(ctx->settings.wifi_pass, 0, sizeof(ctx->settings.wifi_pass));
     if (ctx->wifi_list.count > 0) {
-        memset(ctx->settings.wifi_ssid, 0, sizeof(ctx->settings.wifi_ssid));
-        memset(ctx->settings.wifi_pass, 0, sizeof(ctx->settings.wifi_pass));
         snprintf(ctx->settings.wifi_ssid, sizeof(ctx->settings.wifi_ssid), "%s", ctx->wifi_list.entries[0].ssid);
         snprintf(ctx->settings.wifi_pass, sizeof(ctx->settings.wifi_pass), "%s", ctx->wifi_list.entries[0].pass);
-        config_save_settings(ctx);
     }
+    config_save_settings(ctx);
 
     config_save_wifi_list(ctx);
 
@@ -900,6 +933,106 @@ static esp_err_t handler_post_wifi(httpd_req_t *req) {
     cJSON_AddNumberToObject(resp, "count", ctx->wifi_list.count);
     cJSON_AddBoolToObject(resp, "restart_required", true);
     return send_json(req, resp);
+}
+
+/* GET /api/wifi/scan — scan nearby APs (setup-mode WiFi picker).
+ * Blocking scan (~1-2s). While connected, scanning briefly hops channels and
+ * may blip the WiFi link — acceptable for an on-demand config action. */
+static esp_err_t handler_wifi_scan(httpd_req_t *req) {
+    wifi_mode_t mode;
+    if (esp_wifi_get_mode(&mode) != ESP_OK) {
+        cJSON *json = cJSON_CreateObject();
+        if (!json) return ESP_FAIL;
+        cJSON_AddStringToObject(json, "error", "WiFi not initialized");
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return send_json(req, json);
+    }
+
+    wifi_scan_config_t scan_cfg = { 0 };
+    scan_cfg.show_hidden = false;
+    esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
+    if (err != ESP_OK) {
+        cJSON *json = cJSON_CreateObject();
+        if (!json) return ESP_FAIL;
+        cJSON_AddStringToObject(json, "error", "Scan failed");
+        cJSON_AddStringToObject(json, "detail", esp_err_to_name(err));
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return send_json(req, json);
+    }
+
+    /* Fetch results — this call consumes the driver's scan list either way */
+    const uint16_t max_recs = 32;
+    uint16_t n = 0;
+    wifi_ap_record_t *recs = malloc((size_t)max_recs * sizeof(wifi_ap_record_t));
+    if (recs) {
+        n = max_recs;
+        if (esp_wifi_scan_get_ap_records(&n, recs) != ESP_OK) n = 0;
+    } else {
+        /* Still drain the driver's list so its memory is freed */
+        wifi_ap_record_t drain[4];
+        uint16_t dn = 4;
+        esp_wifi_scan_get_ap_records(&dn, drain);
+    }
+
+    cJSON *json = cJSON_CreateObject();
+    if (!json) {
+        free(recs);
+        return ESP_FAIL;
+    }
+    cJSON *arr = cJSON_AddArrayToObject(json, "networks");
+
+    if (arr && recs) {
+        /* Sort strongest-first (insertion sort, n <= 32) */
+        for (int i = 1; i < (int)n; i++) {
+            wifi_ap_record_t key = recs[i];
+            int j = i - 1;
+            while (j >= 0 && recs[j].rssi < key.rssi) {
+                recs[j + 1] = recs[j];
+                j--;
+            }
+            recs[j + 1] = key;
+        }
+
+        /* Emit at most 16 unique SSIDs (first occurrence = strongest) */
+        int emitted = 0;
+        for (int i = 0; i < (int)n && emitted < 16; i++) {
+            if (recs[i].ssid[0] == '\0') continue;
+            bool seen = false;
+            for (int j = 0; j < i; j++) {
+                if (strcmp((char *)recs[j].ssid, (char *)recs[i].ssid) == 0) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (seen) continue;
+
+            cJSON *item = cJSON_CreateObject();
+            if (!item) continue;
+            cJSON_AddStringToObject(item, "ssid", (char *)recs[i].ssid);
+            cJSON_AddNumberToObject(item, "rssi", recs[i].rssi);
+            cJSON_AddBoolToObject(item, "secure", recs[i].authmode != WIFI_AUTH_OPEN);
+            cJSON_AddItemToArray(arr, item);
+            emitted++;
+        }
+    }
+
+    free(recs);
+    return send_json(req, json);
+}
+
+/* Catch-all handler: every unmatched GET (captive-portal probes like
+ * generate_204 / hotspot-detect.html) gets redirected to the setup page so
+ * phones auto-open it. Registered ONLY in setup mode (httpd started without
+ * a microlink instance) and LAST — esp_http_server matches handlers in
+ * registration order, and a wildcard registered earlier would reject every
+ * later handler with ESP_ERR_HTTPD_HANDLER_EXISTS. */
+static esp_err_t handler_catch_all(httpd_req_t *req) {
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_send(req, "MicroLink setup mode - open http://192.168.4.1/",
+                    HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
 }
 
 /* ============================================================================
@@ -916,18 +1049,21 @@ bool ml_config_get_wifi_list(ml_config_wifi_list_t *list) {
     memset(list, 0, sizeof(*list));
     list->active_idx = 0xFF;
 
-    /* Try wifi_list key first */
+    /* Try the wifi_list key first. When the key EXISTS it is authoritative:
+     * an empty list (count == 0) means the user cleared it and must NOT fall
+     * back to the settings blob — otherwise the removed network resurrects. */
     size_t stored_len = 0;
     err = nvs_get_blob(nvs, NVS_KEY_WIFI, NULL, &stored_len);
     if (err == ESP_OK && stored_len >= 2) {
         size_t read_len = stored_len;
         if (read_len > sizeof(ml_config_wifi_list_t)) read_len = sizeof(ml_config_wifi_list_t);
         err = nvs_get_blob(nvs, NVS_KEY_WIFI, list, &read_len);
-        if (err == ESP_OK && list->count > 0 && list->count <= ML_CONFIG_MAX_WIFI_ENTRIES) {
+        if (err == ESP_OK && list->count <= ML_CONFIG_MAX_WIFI_ENTRIES) {
+            bool has_entries = list->count > 0;
             nvs_close(nvs);
-            return true;
+            return has_entries;
         }
-        /* Invalid data, fall through */
+        /* Corrupt/oversized blob — fall through to the settings fallback */
         memset(list, 0, sizeof(*list));
         list->active_idx = 0xFF;
     }
@@ -976,10 +1112,19 @@ bool ml_config_get_nvs_wifi(char *ssid, size_t ssid_len,
     }
     free(wlist);  /* NULL-safe */
 
-    /* Fall back to settings blob */
+    /* Fall back to the settings blob — only when the wifi_list key is ABSENT
+     * entirely (pre-multi-SSID devices). An existing key is authoritative,
+     * even empty: the user cleared the list, so do not resurrect a stale
+     * settings blob. */
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
     if (err != ESP_OK) return false;
+
+    size_t key_len = 0;
+    if (nvs_get_blob(nvs, NVS_KEY_WIFI, NULL, &key_len) == ESP_OK) {
+        nvs_close(nvs);
+        return false;
+    }
 
     ml_config_settings_t *settings = heap_caps_malloc(sizeof(*settings), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!settings) { nvs_close(nvs); return false; }
@@ -1115,7 +1260,8 @@ esp_err_t ml_config_httpd_start(ml_config_ctx_t *ctx, microlink_t *ml) {
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = 6144;
-    config.max_uri_handlers = 14;
+    /* 12 base handlers + /api/wifi/scan + (setup-mode catch-all) with margin */
+    config.max_uri_handlers = 16;
     config.uri_match_fn = httpd_uri_match_wildcard;
 
     esp_err_t err = httpd_start(&ctx->httpd, &config);
@@ -1138,10 +1284,22 @@ esp_err_t ml_config_httpd_start(ml_config_ctx_t *ctx, microlink_t *ml) {
         { .uri = "/api/restart",     .method = HTTP_POST,   .handler = handler_restart,       .user_ctx = ctx },
         { .uri = "/api/wifi",        .method = HTTP_GET,    .handler = handler_get_wifi,      .user_ctx = ctx },
         { .uri = "/api/wifi",        .method = HTTP_POST,   .handler = handler_post_wifi,     .user_ctx = ctx },
+        { .uri = "/api/wifi/scan",   .method = HTTP_GET,    .handler = handler_wifi_scan,     .user_ctx = ctx },
     };
 
     for (int i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         httpd_register_uri_handler(ctx->httpd, &uris[i]);
+    }
+
+    /* Setup mode (ml == NULL): register the captive-portal catch-all LAST —
+     * esp_http_server matches in registration order and rejects handlers
+     * shadowed by an earlier wildcard. */
+    if (ml == NULL) {
+        const httpd_uri_t catch_all = {
+            .uri = "/*", .method = HTTP_GET,
+            .handler = handler_catch_all, .user_ctx = ctx,
+        };
+        httpd_register_uri_handler(ctx->httpd, &catch_all);
     }
 
     ESP_LOGI(TAG, "HTTP config server started on port %d", config.server_port);

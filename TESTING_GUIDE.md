@@ -4,7 +4,7 @@ This guide covers hardware setup, building, flashing, and testing MicroLink exam
 
 ## Prerequisites
 
-- **ESP-IDF v5.3+** installed ([setup guide](https://docs.espressif.com/projects/esp-idf/en/v5.3/esp32s3/get-started/))
+- **ESP-IDF v6.0+** installed ([setup guide](https://docs.espressif.com/projects/esp-idf/en/v6.1/esp32s3/get-started/))
 - **Tailscale account** with an auth key from [admin.tailscale.com](https://login.tailscale.com/admin/settings/keys)
   - Generate a **reusable + ephemeral** key for development
 - **USB-C cable** for flashing
@@ -57,14 +57,14 @@ Use the `lilygo_sim7670g` example — pin configuration is preset in sdkconfig.d
 
 ```bash
 # Source ESP-IDF
-source ~/esp/esp-idf/export.sh
+. 'C:\Espressif\tools\Microsoft.v6.1.PowerShell_profile.ps1'
 
 # Build
 cd examples/<example_name>
 idf.py build
 
 # Flash + monitor
-idf.py -p /dev/ttyACM0 flash monitor
+idf.py -p COM9 flash monitor
 ```
 
 ## Test 1: WiFi Only (basic_connect)
@@ -73,7 +73,7 @@ Tests WiFi → Tailscale VPN → bidirectional UDP.
 
 ```bash
 cd examples/basic_connect
-idf.py build && idf.py -p /dev/ttyACM0 flash monitor
+idf.py build && idf.py -p COM9 flash monitor
 ```
 
 **Verify on your PC (same Tailscale network):**
@@ -106,7 +106,7 @@ Supports PPP (preferred) with automatic fallback to AT socket bridge if PPP fail
 
 ```bash
 cd examples/cellular_connect
-idf.py build && idf.py -p /dev/ttyACM0 flash monitor
+idf.py build && idf.py -p COM9 flash monitor
 ```
 
 **Verify bidirectional UDP:**
@@ -147,7 +147,7 @@ Tests automatic switching between WiFi and cellular.
 
 ```bash
 cd examples/failover_connect
-idf.py build && idf.py -p /dev/ttyACM0 flash monitor
+idf.py build && idf.py -p COM9 flash monitor
 ```
 
 **Failover test procedure:**
@@ -172,11 +172,44 @@ Failback check: attempting WiFi reconnection...
 === CONNECTED via WiFi ===
 ```
 
+## Test 4: WiFi Lockout Recovery (Setup Mode)
+
+Verifies the SoftAP provisioning fallback in `basic_connect` (requires `CONFIG_ML_PROV_ENABLE_SOFTAP=y` — on by default there).
+
+Note: a device with **no saved WiFi at all** (fresh/wiped) enters setup mode **immediately** at boot; the 60-second wait below applies when saved networks exist but none is reachable.
+
+**Simulate a lockout:** provision the device with a WiFi network that doesn't exist (or turn the AP off), then reset.
+
+```bash
+cd examples/basic_connect
+idf.py build && idf.py -p COM9 flash monitor
+# Expected sequence in the monitor:
+#   W (xxxx) main: WiFi disconnected, reason=201
+#   W (xxxx) main: No WiFi within 60 s — entering SETUP MODE (SoftAP)
+#   I (xxxx) ml_prov: SETUP MODE ON — AP "MicroLink-Setup-a1b2c3" (OPEN), web UI http://192.168.4.1/
+```
+
+**From a phone/laptop:**
+1. Join the `MicroLink-Setup-xxxxxx` AP (open)
+2. The setup page should auto-open (captive portal); otherwise browse to `http://192.168.4.1/`
+3. The yellow **Setup mode** banner is visible; Monitor → **LAN IP** card shows `192.168.4.1`
+4. Press **Scan** → your WiFi appears in the dropdown → select it → enter password → **Add**
+5. Press **Save & Restart** → device reboots → joins WiFi → VPN connects
+
+**Verify from the tailnet:**
+```bash
+curl -s http://<ESP32_VPN_IP>/api/status    # "mode":"vpn", "wifi_ip":"192.168.x.y"
+curl -s http://<ESP32_VPN_IP>/api/wifi/scan # {"networks":[{"ssid","rssi","secure"},...]}
+```
+
+**Also verify:** if the old AP returns while in setup mode, the device auto-recovers within ~60 s (background retry) and continues booting the VPN with the setup AP gone.
+
 ## Troubleshooting
 
 ### WiFi Issues
 - **"WiFi connection failed"**: Check SSID/password in menuconfig
 - **"VPN connection timeout"**: Check Tailscale auth key is valid and not expired
+- **No web UI because the old WiFi is gone**: after ~60 s the device should enter setup mode — join the `MicroLink-Setup-xxxxxx` AP and open `http://192.168.4.1/`. If no setup AP appears, verify `CONFIG_ML_PROV_ENABLE_SOFTAP=y` (delete the generated `sdkconfig` after pulling so new Kconfig options apply) and check the monitor log for `ml_prov` lines.
 
 ### Cellular Issues
 - **"AT communication failed"**: Check UART wiring (TX↔RX crossed correctly)

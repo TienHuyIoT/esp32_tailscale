@@ -165,9 +165,9 @@ Credentials are stored in `sdkconfig` (which is gitignored) so they are never ac
 ### 4. Build and flash
 
 ```bash
-source ~/esp/esp-idf/export.sh
+. 'C:\Espressif\tools\Microsoft.v6.1.PowerShell_profile.ps1'
 idf.py build
-idf.py -p /dev/ttyACM0 flash monitor
+idf.py -p COM9 flash monitor
 ```
 
 ### 5. Test
@@ -509,6 +509,8 @@ Enable `CONFIG_ML_ENABLE_CONFIG_HTTPD=y` in sdkconfig.defaults to get a web UI a
 
 **Resource usage** — ~28KB flash, ~7KB RAM (6KB HTTP task stack + 1KB NVS config). Ifdef-gated: zero cost when disabled (`CONFIG_ML_ENABLE_CONFIG_HTTPD=n`).
 
+**LAN IP** — The System Monitor shows a **LAN IP** card, and `/api/status` reports it as `wifi_ip` — so you can find the device's LAN address (e.g. `192.168.1.42`) even when you're reaching the UI over the tailnet. While in setup mode it shows the setup-AP address `192.168.4.1`.
+
 **REST API** — All functionality available via JSON endpoints:
 
 | Endpoint | Method | Description |
@@ -517,10 +519,27 @@ Enable `CONFIG_ML_ENABLE_CONFIG_HTTPD=y` in sdkconfig.defaults to get a web UI a
 | `/api/peers` | GET | List all tailnet peers |
 | `/api/peers/allowed` | GET/POST | Manage DISCO probe allowlist |
 | `/api/monitor` | GET | System health (temp, heap, RSSI, uptime) |
-| `/api/status` | GET | Connection state and VPN IP |
+| `/api/status` | GET | Connection state, VPN IP, LAN IP (`wifi_ip`), `mode` (vpn/provisioning) |
+| `/api/wifi` | GET/POST | Manage the WiFi network list (priority order) |
+| `/api/wifi/scan` | GET | Scan nearby APs (setup-mode WiFi picker) |
 | `/api/restart` | POST | Restart the device |
 
 **Device naming** — Set a prefix (e.g. `sensor`) to auto-generate `sensor-a1b2c3` from MAC, or set a full custom name. Tailscale creates the DNS entry: `your-name.your-tailnet.ts.net`.
+
+## Setup Mode (SoftAP Provisioning)
+
+When the device cannot join any known WiFi network, it can fall back to a **setup AP** instead of hanging: it broadcasts a `MicroLink-Setup-xxxxxx` network at `192.168.4.1` and serves the same config web UI there. A captive-portal DNS responder answers every A query with the AP address, so phones/laptops typically pop the setup page automatically.
+
+1. Connect to the `MicroLink-Setup-xxxxxx` AP from a phone/laptop
+2. Open `http://192.168.4.1/` (usually opens by itself)
+3. Press **Scan**, pick your WiFi network, enter the password
+4. Press **Save & Restart** — the device reboots and joins the new network
+
+Enabled per-project via `CONFIG_ML_PROV_ENABLE_SOFTAP=y` (requires `CONFIG_ML_ENABLE_CONFIG_HTTPD=y`); `examples/basic_connect` enables it by default. Setup mode starts **immediately** when no WiFi network is configured at all (fresh device), or after a **60-second timeout** when the saved networks are unreachable. After pulling a build with these options, delete the generated `sdkconfig` (or enable them in menuconfig) — new Kconfig options stay off in an existing sdkconfig.
+
+While in setup mode, a slow background retry (once per minute) keeps trying the saved networks — if the old AP comes back, the device leaves setup mode and continues booting the VPN.
+
+**Security note:** the setup web UI has no authentication — anyone on the setup AP can change settings. Set a password via `ML_PROV_AP_PASSWORD` for deployments in public places.
 
 ## Configuration
 
@@ -574,9 +593,15 @@ MicroLink V2 Configuration
 │   ├── WiFi connect timeout (ms)             (30000)
 │   ├── Health check interval (ms)            (30000)
 │   └── WiFi failback check interval (ms)     (120000)
-└── HTTP Config Server
-    ├── Enable HTTP configuration server       [ ]
-    └── Maximum peers in allowlist             (16)
+├── HTTP Config Server
+│   ├── Enable HTTP configuration server       [ ]
+│   └── Maximum peers in allowlist             (16)
+└── WiFi Setup Mode (SoftAP provisioning)
+    ├── Enable SoftAP setup mode fallback      [ ]
+    ├── Setup AP SSID prefix                   (MicroLink-Setup)
+    ├── Setup AP password (empty = open)       ()
+    ├── Setup AP channel                       (1)
+    └── Seconds to wait for WiFi before setup mode (60)
 ```
 
 #### Core Options
@@ -628,6 +653,16 @@ MicroLink V2 Configuration
 |--------|---------|-------------|
 | `ML_ENABLE_CONFIG_HTTPD` | `n` | Enable web UI at `http://<vpn-ip>/` accessible from any tailnet device |
 | `ML_CONFIG_MAX_ALLOWED_PEERS` | `16` | Max peers in DISCO probe allowlist (1-1024). Each entry: 28 bytes in NVS. Empty allowlist = probe all peers. |
+
+#### SoftAP Setup Mode (WiFi lockout recovery)
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `ML_PROV_ENABLE_SOFTAP` | `n` | Enable the setup-AP fallback. Requires `ML_ENABLE_CONFIG_HTTPD`. The app calls `ml_prov_start()` after its WiFi timeout (see `examples/basic_connect`). |
+| `ML_PROV_AP_SSID_PREFIX` | `"MicroLink-Setup"` | Setup AP SSID prefix. Full SSID appends the last 3 MAC bytes, e.g. `MicroLink-Setup-a1b2c3`. |
+| `ML_PROV_AP_PASSWORD` | Empty | Setup AP password. Empty = open network. If set, minimum 8 chars (WPA2). |
+| `ML_PROV_AP_CHANNEL` | `1` | Setup AP channel (1-13). |
+| `ML_PROV_STA_TIMEOUT_S` | `60` | How long the app waits for WiFi before entering setup mode. |
 
 ### DERP Relay
 

@@ -203,7 +203,9 @@ bool ml_config_get_nvs_apn(char *apn, size_t apn_len);
  *
  * Returns the priority-ordered list of WiFi networks configured via the web UI.
  * Call at boot to get the full list for round-robin connection attempts.
- * Falls back to settings blob WiFi if wifi_list NVS key doesn't exist.
+ * Falls back to the settings blob WiFi only when the wifi_list NVS key does
+ * not exist. An existing-but-empty list is authoritative (returns false) —
+ * a cleared list must not resurrect a stale settings blob.
  *
  * @param list Output: populated WiFi list
  * @return true if list was loaded (count > 0)

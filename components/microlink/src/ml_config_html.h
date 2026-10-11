@@ -14,7 +14,7 @@ static const char CONFIG_PAGE_HTML[] =
 "<title>MicroLink</title>"
 "<style>"
 "*{box-sizing:border-box;margin:0;padding:0}"
-"body{font-family:system-ui,-apple-system,sans-serif;background:#0d1117;color:#e6edf3;padding:0}"
+"body{font-family:system-ui,-apple-system,sans-serif;background:#0d1117;color:#e6edf3;padding:0;overflow-x:hidden}"
 ".wrap{max-width:1100px;margin:0 auto;padding:20px}"
 
 /* Header bar */
@@ -68,14 +68,16 @@ static const char CONFIG_PAGE_HTML[] =
 ".chk-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}"
 ".chk{display:flex;gap:8px;align-items:center;font-size:.85em;color:#8b949e}"
 ".chk input{width:auto;accent-color:#58a6ff}"
-".form-actions{grid-column:1/-1;display:flex;gap:10px;margin-top:6px;align-items:center}"
+".form-actions{grid-column:1/-1;display:flex;gap:10px;margin-top:6px;align-items:center;flex-wrap:wrap}"
 ".msg{padding:10px;border-radius:6px;margin-top:8px;font-size:.85em;display:none;grid-column:1/-1}"
 ".msg-ok{background:#23863620;color:#3fb950;display:block;border:1px solid #23863640}"
 ".msg-err{background:#da363320;color:#f85149;display:block;border:1px solid #da363340}"
+".setup-banner{background:#d2992020;border:1px solid #d2992040;color:#d29922;padding:12px 16px;"
+"border-radius:8px;margin-bottom:16px;font-size:.9em;display:none;line-height:1.5}"
 
 /* Peer list */
 ".peer-item{display:flex;align-items:center;gap:10px;padding:10px 12px;background:#0d1117;"
-"border-radius:6px;margin:4px 0;font-size:.9em;border:1px solid #21262d}"
+"border-radius:6px;margin:4px 0;font-size:.9em;border:1px solid #21262d;flex-wrap:wrap}"
 ".peer-item .ip{font-family:monospace;color:#58a6ff;font-weight:500;min-width:120px}"
 ".peer-item .name{color:#8b949e;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
 ".peer-item .path{font-size:.75em;font-weight:600;padding:3px 8px;border-radius:10px}"
@@ -85,13 +87,14 @@ static const char CONFIG_PAGE_HTML[] =
 "border:1px solid #23863640}"
 ".badge-blocked{background:#da363320;color:#f85149;font-size:.75em;padding:3px 8px;border-radius:10px;"
 "border:1px solid #da363340}"
-".add-form{display:flex;gap:8px;margin:10px 0;align-items:center}"
-".add-form input{flex:1}"
+".add-form{display:flex;gap:8px;margin:10px 0;align-items:center;flex-wrap:wrap}"
+".add-form input{flex:1 1 140px;min-width:0}"
+".add-form select{flex:1 1 140px;min-width:0}"
 ".peer-list{margin:8px 0}"
 
 /* WiFi list */
 ".wifi-item{display:flex;align-items:center;gap:8px;padding:10px 12px;background:#0d1117;"
-"border-radius:6px;margin:4px 0;font-size:.9em;border:1px solid #21262d}"
+"border-radius:6px;margin:4px 0;font-size:.9em;border:1px solid #21262d;flex-wrap:wrap}"
 ".wifi-item .num{color:#484f58;font-weight:700;min-width:24px;text-align:center}"
 ".wifi-item .ssid{font-family:monospace;color:#58a6ff;font-weight:500;flex:1}"
 ".wifi-item .wpw{color:#8b949e;font-size:.85em}"
@@ -100,6 +103,26 @@ static const char CONFIG_PAGE_HTML[] =
 
 /* Empty state */
 ".empty{color:#484f58;font-size:.9em;padding:20px;text-align:center}"
+
+/* Mobile layout (phones + captive-portal webviews). Placed LAST so it wins
+   the cascade over the base rules above (same specificity, later source). */
+"@media(max-width:640px){"
+".wrap{padding:12px}"
+".hdr{padding:10px 12px}"
+".hdr-right{flex-wrap:wrap;gap:8px}"
+".section-body{padding:12px}"
+".form-grid{grid-template-columns:1fr}"
+".add-form input,.add-form select{flex:1 1 100%;min-width:0}"
+".add-form button{flex:1 1 auto}"
+".form-actions button{flex:1 1 auto}"
+".section-hdr{flex-wrap:wrap;gap:4px}"
+".peer-item .ip{min-width:80px}"
+".mon-grid{grid-template-columns:repeat(auto-fit,minmax(105px,1fr))}"
+"}"
+"@media(max-width:420px){"
+".hdr h1{font-size:1.15em}"
+".wifi-item .wpw{display:none}"
+"}"
 
 "</style></head><body>"
 
@@ -113,6 +136,10 @@ static const char CONFIG_PAGE_HTML[] =
 "</div></div>"
 
 "<div class='wrap'>"
+
+/* ---- Setup-mode banner (shown when /api/status reports mode=provisioning) ---- */
+"<div class='setup-banner' id='setupBanner'>"
+"Setup mode &mdash; not connected to WiFi. Connect to the setup AP, add your network below, then press <b>Save &amp; Restart</b>.</div>"
 
 /* ---- Monitor Section ---- */
 "<div class='section'>"
@@ -128,6 +155,7 @@ static const char CONFIG_PAGE_HTML[] =
 "<div class='mon-card'><div class='val' id='mMinHeap'>--</div><div class='lbl'>Min Heap</div></div>"
 "<div class='mon-card'><div class='val' id='mDerp'>--</div><div class='lbl'>DERP Region</div></div>"
 "<div class='mon-card'><div class='val' id='mPeers'>--</div><div class='lbl'>Peers</div></div>"
+"<div class='mon-card'><div class='val' id='mLanIp' style='font-size:1em'>--</div><div class='lbl'>LAN IP</div></div>"
 "</div>"
 "<div class='task-list' id='mTasks'></div>"
 "</div></div>"
@@ -141,9 +169,14 @@ static const char CONFIG_PAGE_HTML[] =
 "Device tries each network in order until connected. Drag to reorder priority.</p>"
 "<div id='wifiList'></div>"
 "<div class='add-form'>"
+"<button class='btn-outline btn-sm' id='wifiScanBtn' onclick='scanWifi()'>Scan</button>"
+"<select id='wifiScanSel' onchange='pickScan()' style='display:none;padding:10px 12px;background:#0d1117;border:1px solid #30363d;color:#e6edf3;border-radius:6px;font-size:.9em'></select>"
+"</div>"
+"<div class='add-form'>"
 "<input type='text' id='wifiSsid' placeholder='SSID'>"
 "<input type='password' id='wifiPass' placeholder='Password'>"
 "<button class='btn-add btn-sm' onclick='addWifi()'>Add</button>"
+"<button class='btn-primary btn-sm' onclick='saveAndRestart()'>Save &amp; Restart</button>"
 "</div>"
 "<div class='msg' id='wifiMsg'></div>"
 "</div></div>"
@@ -223,7 +256,7 @@ static const char CONFIG_PAGE_HTML[] =
 
 "<div class='form-actions'>"
 "<button class='btn-primary' onclick='saveSettings()'>Save Settings</button>"
-"<button class='btn-danger' onclick='doRestart()'>Restart Device</button>"
+"<button class='btn-danger' id='restartBtn' onclick='doRestart()'>Restart Device</button>"
 "</div>"
 "<div class='msg' id='settingsMsg'></div>"
 "</div></div>"
@@ -256,6 +289,7 @@ static const char CONFIG_PAGE_HTML[] =
 "const d=await r.json();"
 "document.getElementById('vpnIp').textContent=d.vpn_ip||'--';"
 "document.getElementById('hostName').textContent=d.hostname||'';"
+"document.getElementById('setupBanner').style.display=(d.mode==='provisioning')?'block':'none';"
 "}catch(e){document.getElementById('vpnIp').textContent='offline';}"
 "}"
 
@@ -288,6 +322,7 @@ static const char CONFIG_PAGE_HTML[] =
 "const sr=await fetch('/api/status');"
 "const sd=await sr.json();"
 "document.getElementById('mPeers').textContent=sd.peer_count||0;"
+"document.getElementById('mLanIp').textContent=sd.wifi_ip||'--';"
 /* Task stacks */
 "var te=document.getElementById('mTasks');"
 "if(d.tasks){"
@@ -415,9 +450,46 @@ static const char CONFIG_PAGE_HTML[] =
 "const r=await fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/json'},"
 "body:JSON.stringify({networks:wifiNetworks})});"
 "const d=await r.json();"
-"if(d.ok)showMsg('wifiMsg','Saved. Restart for changes to take effect.',true);"
-"else showMsg('wifiMsg','Save failed',false);"
-"}catch(e){showMsg('wifiMsg','Save failed: '+e,false);}"
+"if(d.ok){showMsg('wifiMsg','Saved. Restart for changes to take effect.',true);return true;}"
+"showMsg('wifiMsg','Save failed',false);return false;"
+"}catch(e){showMsg('wifiMsg','Save failed: '+e,false);return false;}"
+"}"
+
+/* ---- WiFi scan + Save & Restart ---- */
+"function scanWifi(){"
+"var b=document.getElementById('wifiScanBtn');"
+"b.disabled=true;b.textContent='Scanning...';"
+"fetch('/api/wifi/scan').then(r=>r.json()).then(d=>{"
+"b.disabled=false;b.textContent='Scan';"
+"var nets=d.networks||[];"
+"var sel=document.getElementById('wifiScanSel');"
+"while(sel.firstChild)sel.removeChild(sel.firstChild);"
+"if(nets.length===0){sel.style.display='none';showMsg('wifiMsg','No networks found',false);return;}"
+"var o0=document.createElement('option');"
+"o0.value='';o0.textContent='Select network ('+nets.length+' found)...';"
+"sel.appendChild(o0);"
+"nets.forEach(function(n){"
+"var o=document.createElement('option');"
+"o.value=n.ssid;"
+"o.textContent=n.ssid+' ('+n.rssi+' dBm)'+(n.secure?' [secured]':'');"
+"sel.appendChild(o);"
+"});"
+"sel.style.display='';"
+"}).catch(e=>{b.disabled=false;b.textContent='Scan';showMsg('wifiMsg','Scan failed: '+e,false);});"
+"}"
+
+"function pickScan(){"
+"var sel=document.getElementById('wifiScanSel');"
+"if(sel.value)document.getElementById('wifiSsid').value=sel.value;"
+"}"
+
+"async function saveAndRestart(){"
+"if(await saveWifi()){"
+"showMsg('wifiMsg','Saved - restarting now...',true);"
+"await restartNow();"
+"}else{"
+"showMsg('wifiMsg','Not restarting: fix the save error first',false);"
+"}"
 "}"
 
 /* ---- Peer Allowlist ---- */
@@ -475,10 +547,20 @@ static const char CONFIG_PAGE_HTML[] =
 
 
 /* ---- Restart ---- */
-"async function doRestart(){"
-"if(!confirm('Restart the device?'))return;"
+/* No confirm()/alert() here: captive-portal webviews (the browser popup that
+ * opens when joining the setup AP) block JS dialogs, which silently turned
+ * "Save & Restart" into "save and do nothing". The standalone settings
+ * button uses a two-step inline confirm (click once to arm, again to fire). */
+"async function restartNow(){"
 "try{await fetch('/api/restart',{method:'POST'});}catch(e){}"
 "document.getElementById('vpnIp').textContent='Restarting...';"
+"}"
+"function doRestart(){"
+"var b=document.getElementById('restartBtn');"
+"if(b&&b.dataset.armed==='1'){b.dataset.armed='';restartNow();return;}"
+"if(b){b.dataset.armed='1';b.textContent='Confirm restart?';"
+"setTimeout(function(){if(b.dataset.armed==='1'){b.dataset.armed='';b.textContent='Restart Device';}},4000);return;}"
+"restartNow();"
 "}"
 
 /* ---- Init ---- */

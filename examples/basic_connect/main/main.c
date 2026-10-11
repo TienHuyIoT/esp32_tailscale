@@ -26,6 +26,8 @@
 #include "microlink.h"
 #include "microlink_internal.h"  /* For task handle access (diagnostic) */
 #include "ml_config_httpd.h"     /* NVS WiFi override at boot */
+#include "ml_prov.h"             /* SoftAP setup mode fallback (CONFIG_ML_PROV_ENABLE_SOFTAP) */
+#include "esp_timer.h"
 
 static const char *TAG = "main";
 
@@ -42,6 +44,17 @@ static int wifi_list_count = 0;      /* 0 = single SSID mode */
 static int current_wifi_idx = 0;
 static int wifi_retry_count = 0;
 #define WIFI_MAX_RETRIES_PER_SSID 3
+
+#ifdef CONFIG_ML_PROV_ENABLE_SOFTAP
+/* Setup mode: STA retry interval while the setup AP is active. The user is
+ * expected to press "Save & Restart" in the web UI after provisioning; this
+ * slow background retry is only a safety net for "the old AP came back". */
+#define PROV_STA_RETRY_MS 60000
+static int64_t s_last_prov_retry_us = 0;
+/* false = no WiFi credentials at all → setup mode starts immediately at boot
+ * (nothing to wait for) and STA auto-connect is skipped. */
+static bool s_sta_configured = true;
+#endif
 
 /* WiFi event group */
 static EventGroupHandle_t wifi_event_group;
@@ -157,11 +170,35 @@ static void wifi_try_next(void) {
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                  int32_t event_id, void *event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+#ifdef CONFIG_ML_PROV_ENABLE_SOFTAP
+        /* In setup mode the APSTA mode switch re-fires STA_START; skip the
+         * auto-connect — the throttled retry below owns reconnection.
+         * Also skip when no network is configured at all: there is nothing
+         * to connect to and setup mode starts immediately below. */
+        if (!ml_prov_is_active() && s_sta_configured) {
+            esp_wifi_connect();
+        }
+#else
         esp_wifi_connect();
+#endif
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *disc = (wifi_event_sta_disconnected_t *)event_data;
         ESP_LOGW(TAG, "WiFi disconnected, reason=%d", disc->reason);
+#ifdef CONFIG_ML_PROV_ENABLE_SOFTAP
+        if (ml_prov_is_active()) {
+            /* Setup mode: retry at most once per PROV_STA_RETRY_MS — the
+             * user reloads credentials via "Save & Restart" in the web UI. */
+            int64_t now_us = esp_timer_get_time();
+            if (now_us - s_last_prov_retry_us >= (int64_t)PROV_STA_RETRY_MS * 1000) {
+                s_last_prov_retry_us = now_us;
+                wifi_try_next();
+            }
+        } else {
+            wifi_try_next();
+        }
+#else
         wifi_try_next();
+#endif
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "WiFi connected to %s, IP: " IPSTR,
@@ -248,12 +285,62 @@ void app_main(void) {
         ESP_LOGI(TAG, "Using Kconfig WiFi: %s", wifi_ssid);
     }
 
+#ifdef CONFIG_ML_PROV_ENABLE_SOFTAP
+    /* No network configured at all (fresh/wiped device): setup mode below
+     * starts immediately instead of waiting for the timeout. */
+    s_sta_configured = (wifi_list_count > 0) || (wifi_ssid[0] != '\0');
+#endif
+
     /* Initialize WiFi */
     wifi_init();
 
     /* Wait for WiFi connection */
+#ifdef CONFIG_ML_PROV_ENABLE_SOFTAP
+    /* Setup mode is entered either immediately (nothing configured at all —
+     * there is nothing to wait for) or after the timeout (saved networks
+     * exist but none is reachable). It serves the config web UI at
+     * http://192.168.4.1/ so credentials can be added without reflashing. */
+    bool enter_setup = false;
+    if (!s_sta_configured) {
+        ESP_LOGW(TAG, "No WiFi configured — entering SETUP MODE (SoftAP) immediately");
+        enter_setup = true;
+    } else {
+        EventBits_t wifi_bits = xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT,
+                                                    pdFALSE, pdTRUE,
+                                                    pdMS_TO_TICKS(CONFIG_ML_PROV_STA_TIMEOUT_S * 1000));
+        if (!(wifi_bits & WIFI_CONNECTED_BIT)) {
+            ESP_LOGW(TAG, "No WiFi within %d s — entering SETUP MODE (SoftAP)",
+                     CONFIG_ML_PROV_STA_TIMEOUT_S);
+            enter_setup = true;
+        }
+    }
+
+    if (enter_setup) {
+        /* Defer the first background retry by one full interval */
+        s_last_prov_retry_us = esp_timer_get_time();
+
+        esp_err_t prov_err = ml_prov_start(NULL);
+        if (prov_err != ESP_OK) {
+            ESP_LOGE(TAG, "ml_prov_start failed (%s) — waiting for WiFi anyway",
+                     esp_err_to_name(prov_err));
+            xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT,
+                                 pdFALSE, pdTRUE, portMAX_DELAY);
+        } else {
+            ESP_LOGI(TAG, "Setup mode active — AP: %s — open http://192.168.4.1/",
+                     ml_prov_get_ap_ssid() ? ml_prov_get_ap_ssid() : "(unknown)");
+            /* Stay in setup mode until WiFi connects (old AP came back via the
+             * background retry) or the user saves credentials + restarts. */
+            while (!(xEventGroupGetBits(wifi_event_group) & WIFI_CONNECTED_BIT)) {
+                vTaskDelay(pdMS_TO_TICKS(2000));
+            }
+            ESP_LOGI(TAG, "WiFi connected while in setup mode — resuming normal boot");
+            ml_prov_stop();
+        }
+    }
+#else
     xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT,
                          pdFALSE, pdTRUE, portMAX_DELAY);
+#endif
 
     /* Initialize MicroLink
      * Auth key and device name come from Kconfig here, but microlink_init()
