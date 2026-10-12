@@ -580,6 +580,17 @@ static cJSON *config_to_json(void) {
         else cJSON_AddNullToObject(gpios, def->name);
     }
 
+    /* Active level per hardware function ("high" = drive high to press). */
+    cJSON *levels = cJSON_AddObjectToObject(json, "gpio_levels");
+    for (int i = 0; i < PC_CMD_COUNT; i++) {
+        const pc_cmd_def_t *def = pc_cmd_def(i);
+        if (!def) continue;
+        int slot = pc_cmd_gpio_slot(def->id);
+        if (slot < 0) continue;
+        cJSON_AddStringToObject(levels, def->name,
+                                cfg.level[slot] == PC_CFG_LEVEL_LOW ? "low" : "high");
+    }
+
     cJSON_AddNumberToObject(json, "short_press_ms", cfg.short_press_ms);
     cJSON_AddNumberToObject(json, "long_press_ms", cfg.long_press_ms);
     cJSON_AddNumberToObject(json, "short_press_min_ms", PC_CFG_SHORT_PRESS_MIN);
@@ -781,6 +792,34 @@ static esp_err_t handler_post_config(httpd_req_t *req) {
         }
     }
 
+    /* Active level per hardware function: "high" | "low" (string, or
+     * boolean true = high / false = low for convenience). */
+    cJSON *levels = cJSON_GetObjectItem(json, "gpio_levels");
+    if (levels && cJSON_IsObject(levels)) {
+        cJSON *lv = NULL;
+        cJSON_ArrayForEach(lv, levels) {
+            const pc_cmd_def_t *def = pc_cmd_lookup(lv->string);
+            int slot = pc_cmd_gpio_slot(def ? def->id : PC_CMD_COUNT);
+            if (!def || slot < 0) {
+                cJSON_Delete(json);
+                return send_error(req, "400 Bad Request", "invalid_field", "gpio_levels");
+            }
+            if (cJSON_IsTrue(lv)) {
+                patch.level[slot] = PC_CFG_LEVEL_HIGH;
+            } else if (cJSON_IsFalse(lv)) {
+                patch.level[slot] = PC_CFG_LEVEL_LOW;
+            } else if (cJSON_IsString(lv) && strcmp(lv->valuestring, "high") == 0) {
+                patch.level[slot] = PC_CFG_LEVEL_HIGH;
+            } else if (cJSON_IsString(lv) && strcmp(lv->valuestring, "low") == 0) {
+                patch.level[slot] = PC_CFG_LEVEL_LOW;
+            } else {
+                cJSON_Delete(json);
+                return send_error(req, "400 Bad Request", "invalid_field", "gpio_levels");
+            }
+            patch.set_level[slot] = true;
+        }
+    }
+
     bool have_short = false, have_long = false;
     if ((item = cJSON_GetObjectItem(json, "short_press_ms"))) {
         if (!cJSON_IsNumber(item)) {
@@ -811,7 +850,8 @@ static esp_err_t handler_post_config(httpd_req_t *req) {
     cJSON_Delete(json);
     if (err == ESP_ERR_INVALID_STATE) {
         return send_error(req, "409 Conflict", "gpio_conflict",
-                          "PWR_RESET must not share a pin with a PWR_SW function");
+                          "PWR_RESET must not share a pin with a PWR_SW function, "
+                          "and functions sharing a pin must use the same active level");
     }
     if (err == ESP_ERR_INVALID_ARG) {
         return send_error(req, "400 Bad Request", "invalid_config",

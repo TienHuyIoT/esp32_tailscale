@@ -12,6 +12,10 @@ simulated, no GPIO, no agent contact). The Windows agent ships in
 Both must be *deliberately* reconfigured by a human - see
 `docs/PC_CONTROLLER.md` for the full security and honesty model.
 
+Each hardware output also has a runtime **active level** (HIGH default;
+LOW for low-trigger circuits), selectable per function in
+`/pc/settings` - see the GPIO policy section in `docs/PC_CONTROLLER.md`.
+
 This example is derived from `examples/basic_connect` (same WiFi/NVS/
 setup-mode boot flow, plus a UDP echo on :9000 kept for regression
 testing). `basic_connect` itself is untouched by this example.
@@ -87,7 +91,9 @@ or first build).
    `SHUTDOWN`/`RESTART` start enabled; the four hardware functions start
    **disabled with NC pins** and are rejected until enabled *and* given
    an allowed GPIO. `PWR_RESET` must use a different pin than the
-   PWR_SW-family functions.
+   PWR_SW-family functions. Each function also has an **active level**
+   (HIGH default; LOW for low-trigger circuits) - functions sharing a
+   pin must use the same level.
 
 4. Execution mode (`idf.py menuconfig` -> Example Configuration):
 

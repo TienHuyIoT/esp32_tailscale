@@ -443,9 +443,9 @@ refresh();
 /**
  * @file (continued in pc_web.h)
  * @brief Device Settings page (/pc/settings): Windows PC connection, agent
- *        token, per-function permissions, GPIO mapping and press timings.
- *        All changes are saved through POST /api/v1/config (NVS-backed)
- *        and enforced firmware-side.
+ *        token, per-function permissions, GPIO mapping (pin + active level)
+ *        and press timings. All changes are saved through POST /api/v1/config
+ *        (NVS-backed) and enforced firmware-side.
  */
 
 static const char PCCTL_SETTINGS_HTML[] = R"PCSET(<!DOCTYPE html>
@@ -514,7 +514,7 @@ footer{margin:22px 0 8px;font-size:.72em;color:#484f58;text-align:center;line-he
  <h2>GPIO mapping (hardware functions)</h2>
  <div class="card" id="gpioList">
  </div>
- <div class="hint">POWER_ON / WAKE_UP / FORCE_POWER_OFF may share one PWR_SW output; PWR_RESET must use a different pin. NC = not configured - hardware functions are rejected until a pin is selected. Only board-verified pins are listed.</div>
+ <div class="hint">POWER_ON / WAKE_UP / FORCE_POWER_OFF may share one PWR_SW output; PWR_RESET must use a different pin. Functions sharing a pin must use the same active level. Active level = the level driven to "press": HIGH for the typical transistor/optocoupler stage into an active-low front-panel input; LOW for low-trigger circuits (opto modules, PNP stages). NC = not configured - hardware functions are rejected until a pin is selected. Only board-verified pins are listed.</div>
 
  <h2>Press timings</h2>
  <div class="card">
@@ -597,8 +597,17 @@ function buildGpioRows(){
   HW_FUNCS.forEach(function(name){
     const row = document.createElement('div'); row.className = 'frm';
     const lbl = document.createElement('label'); lbl.textContent = name;
+    const wrap = document.createElement('div'); wrap.className = 'row';
     const sel = document.createElement('select'); sel.className = 'txt'; sel.id = 'g-' + name;
-    row.appendChild(lbl); row.appendChild(sel); gl.appendChild(row);
+    sel.style.flex = '1 1 130px';
+    const lvl = document.createElement('select'); lvl.className = 'txt'; lvl.id = 'l-' + name;
+    lvl.style.flex = '1 1 120px';
+    lvl.title = 'level driven to "press" the front-panel input';
+    const oh = document.createElement('option'); oh.value = 'high'; oh.textContent = 'Active HIGH';
+    const ol = document.createElement('option'); ol.value = 'low';  ol.textContent = 'Active LOW';
+    lvl.appendChild(oh); lvl.appendChild(ol);
+    wrap.appendChild(sel); wrap.appendChild(lvl);
+    row.appendChild(lbl); row.appendChild(wrap); gl.appendChild(row);
   });
 }
 function render(){
@@ -634,6 +643,8 @@ function render(){
       const o = document.createElement('option'); o.value = p; o.textContent = 'GPIO' + p; sel.appendChild(o);
     });
     sel.value = (cfg.gpios[name] === null || cfg.gpios[name] === undefined) ? '' : String(cfg.gpios[name]);
+    const lvl = $('l-' + name);
+    if (lvl) lvl.value = (cfg.gpio_levels && cfg.gpio_levels[name] === 'low') ? 'low' : 'high';
   });
 
   if (cfg.last_test) {
@@ -670,12 +681,18 @@ async function saveAll(){
     const v = $('g-' + n).value;
     gpios[n] = (v === '') ? null : parseInt(v, 10);
   });
+  const levels = {};
+  HW_FUNCS.forEach(function(n){
+    const l = $('l-' + n);
+    levels[n] = (l && l.value === 'low') ? 'low' : 'high';
+  });
   const body = {
     pc_host: $('pcHost').value.trim(),
     pc_port: parseInt($('pcPort').value, 10),
     timeout_ms: parseInt($('pcTimeout').value, 10),
     functions: functions,
     gpios: gpios,
+    gpio_levels: levels,
     short_press_ms: parseInt($('shortMs').value, 10),
     long_press_ms: parseInt($('longMs').value, 10)
   };

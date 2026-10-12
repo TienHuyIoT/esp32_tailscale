@@ -12,6 +12,12 @@
  * reset or reboot cannot actuate anything. An ESP32 reboot mid-pulse simply
  * ends the pulse (the pin returns to its default state). An external pulldown
  * in the interface circuit is still recommended.
+ *
+ * Assert level: "active HIGH" / "active LOW" is a runtime setting per output
+ * (Settings UI, NVS) - the level driven to press the button; idle is the
+ * opposite level. Default HIGH suits the typical transistor/optocoupler
+ * stage into an active-low PWR_SW#/RESET_SW# - VERIFY the configured level
+ * against your circuit before enabling this mode.
  */
 
 #include "sdkconfig.h"
@@ -27,11 +33,8 @@
 
 static const char *TAG = "pc_hw_gpio";
 
-/* Assert level driven on the output pin. HIGH suits the typical
- * transistor/optocoupler interface to an active-low front-panel pin -
- * VERIFY against your circuit before enabling this mode. */
-#define ASSERT_LEVEL 1
-#define IDLE_LEVEL   0
+/* Legacy fixed levels are gone: assert/idle are derived per pulse from the
+ * runtime "active HIGH/LOW" setting (pc_hw_params_t.active_high). */
 
 static esp_err_t gpio_init(void) {
     /* Pins come from the runtime Settings UI (NVS) and are driven only on
@@ -63,15 +66,20 @@ static uint32_t gpio_duration(pc_cmd_id_t id, const pc_hw_params_t *params) {
     }
 }
 
-static esp_err_t pulse(int pin, uint32_t ms) {
+static esp_err_t pulse(int pin, uint32_t ms, bool active_high) {
     if (pin < 0) return ESP_ERR_INVALID_STATE;
-    /* Configure lazily and start from the idle level so a reboot cannot
-     * leave the pin configured but floating at the assert level. */
+    const int assert_level = active_high ? 1 : 0;
+    const int idle_level   = active_high ? 0 : 1;
+    /* Pre-load the output latch with the IDLE level BEFORE enabling the
+     * output driver: enabling first would briefly drive the latch's
+     * reset-default value (0) - for active-LOW wiring 0 is the assert
+     * level, i.e. a false-press glitch at every pulse start. With the
+     * latch pre-set, the driver enables straight into idle. */
+    gpio_set_level(pin, idle_level);
     gpio_set_direction(pin, GPIO_MODE_OUTPUT);
-    gpio_set_level(pin, IDLE_LEVEL);
-    gpio_set_level(pin, ASSERT_LEVEL);
+    gpio_set_level(pin, assert_level);
     vTaskDelay(pdMS_TO_TICKS(ms));
-    gpio_set_level(pin, IDLE_LEVEL);
+    gpio_set_level(pin, idle_level);
     return ESP_OK;
 }
 
@@ -82,29 +90,31 @@ static esp_err_t gpio_execute(pc_cmd_id_t id, const pc_hw_params_t *params,
         return ESP_ERR_INVALID_STATE;
     }
     int pin = params->gpio_pin;
+    const bool active_high = params->active_high;
+    const char *lvl = active_high ? "HIGH" : "LOW";
     uint32_t dur = gpio_duration(id, params);
     esp_err_t err;
     switch (id) {
     case PC_CMD_POWER_ON:
-        err = pulse(pin, dur);
+        err = pulse(pin, dur, active_high);
         snprintf(detail, detail_len,
-                 "PWR_SW short press %lu ms on GPIO%d issued (outcome not verified)",
-                 (unsigned long)dur, pin);
+                 "PWR_SW short press %lu ms on GPIO%d (%s) issued (outcome not verified)",
+                 (unsigned long)dur, pin, lvl);
         break;
     case PC_CMD_WAKE_UP:
-        err = pulse(pin, dur);
-        snprintf(detail, detail_len, "PWR_SW wake press %lu ms on GPIO%d issued",
-                 (unsigned long)dur, pin);
+        err = pulse(pin, dur, active_high);
+        snprintf(detail, detail_len, "PWR_SW wake press %lu ms on GPIO%d (%s) issued",
+                 (unsigned long)dur, pin, lvl);
         break;
     case PC_CMD_PWR_RESET:
-        err = pulse(pin, dur);
-        snprintf(detail, detail_len, "RESET_SW press %lu ms on GPIO%d issued",
-                 (unsigned long)dur, pin);
+        err = pulse(pin, dur, active_high);
+        snprintf(detail, detail_len, "RESET_SW press %lu ms on GPIO%d (%s) issued",
+                 (unsigned long)dur, pin, lvl);
         break;
     case PC_CMD_FORCE_POWER_OFF:
-        err = pulse(pin, dur);
-        snprintf(detail, detail_len, "PWR_SW held %lu ms on GPIO%d (force off)",
-                 (unsigned long)dur, pin);
+        err = pulse(pin, dur, active_high);
+        snprintf(detail, detail_len, "PWR_SW held %lu ms on GPIO%d (%s, force off)",
+                 (unsigned long)dur, pin, lvl);
         break;
     default:
         err = ESP_ERR_NOT_SUPPORTED;

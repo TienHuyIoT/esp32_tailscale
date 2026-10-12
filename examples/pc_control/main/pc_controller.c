@@ -285,6 +285,7 @@ static void execute_hw_command(const pc_job_t *job) {
     int slot = pc_cmd_gpio_slot(job->id);
     pc_hw_params_t params = {
         .gpio_pin = (slot >= 0) ? cfg.gpio[slot] : -1,
+        .active_high = (slot >= 0) && (cfg.level[slot] == PC_CFG_LEVEL_HIGH),
         .pulse_ms = cfg.short_press_ms,
         .hold_ms = (job->id == PC_CMD_FORCE_POWER_OFF && job->hold_ms)
                        ? job->hold_ms : cfg.long_press_ms,

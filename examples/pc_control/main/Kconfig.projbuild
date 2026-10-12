@@ -121,13 +121,13 @@ menu "Example Configuration"
                 motherboard front-panel pins. Never connect GPIOs directly
                 to PWR_SW# / RESET_SW#.
 
-                Pin mapping and pulse timing are configured at runtime in
-                the device Settings UI (NVS-backed); this switch only
-                compiles the physical GPIO implementation in.
+                Pin mapping, active level and pulse timing are configured at
+                runtime in the device Settings UI (NVS-backed); this switch
+                only compiles the physical GPIO implementation in.
 
-        # Pin mapping, pulse widths and function enables are configured at
-        # runtime in the device Settings UI (/pc/settings) and persisted in
-        # NVS; see pc_config.c and docs/PC_CONTROLLER.md "Configuration".
+        # Pin mapping, active level, pulse widths and function enables are
+        # configured at runtime in the device Settings UI (/pc/settings) and
+        # persisted in NVS; see pc_config.c and docs/PC_CONTROLLER.md.
 
     endmenu
 

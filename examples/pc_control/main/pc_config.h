@@ -5,18 +5,23 @@
  * Everything the user configures at runtime lives here:
  *   - Windows PC tailnet address / service port / HTTP timeout / agent token
  *   - six independent function Enable flags
- *   - GPIO mapping (NC or an allowed pin) + press timings
+ *   - GPIO mapping (NC or an allowed pin) + assert level + press timings
  *
  * Storage: NVS namespace "pc_ctl", keys "conn" and "hw" (versioned blobs).
- * Kconfig values are only *defaults*: they seed the first boot when NVS is
- * empty. NVS is written ONLY on explicit user saves through the settings
- * API - never while fields are being edited.
+ * "hw" v2 adds a per-slot assert level; v1 blobs (byte prefix of v2) are
+ * accepted and migrated in RAM - levels default to HIGH (= v1 behavior)
+ * and the v2 layout is persisted on the next explicit save. Kconfig values
+ * are only *defaults*: they seed the first boot when NVS is empty. NVS is
+ * written ONLY on explicit user saves through the settings API - never
+ * while fields are being edited.
  *
  * Validation rules (enforced here, firmware-side, not just in the UI):
  *   - host: 1..63 chars of [A-Za-z0-9.-] (tailnet IP or hostname)
  *   - port: 1..65535; timeout: 1000..30000 ms
  *   - token: 4..95 printable non-space chars; empty = cleared
  *   - GPIO: NC (-1) or a pin from the verified list for THIS device
+ *   - assert level: PC_CFG_LEVEL_HIGH (default) or PC_CFG_LEVEL_LOW;
+ *     slots sharing a pin must use the same level
  *   - PWR_RESET must never share a pin with a PWR_SW-family function
  *     (POWER_ON / WAKE_UP / FORCE_POWER_OFF may share one PWR_SW output)
  */
@@ -41,6 +46,12 @@
 /* GPIO slots: 0=POWER_ON, 1=WAKE_UP, 2=PWR_RESET, 3=FORCE_POWER_OFF */
 #define PC_CFG_GPIO_SLOTS 4
 
+/* Assert level per slot: the level driven to "press" the front-panel input
+ * (idle = the opposite level). HIGH is the default and matches the classic
+ * transistor/optocoupler stage into an active-low PWR_SW#/RESET_SW#. */
+#define PC_CFG_LEVEL_LOW  0
+#define PC_CFG_LEVEL_HIGH 1
+
 typedef struct {
     char     host[PC_CFG_HOST_MAX];
     uint16_t port;
@@ -48,6 +59,7 @@ typedef struct {
     bool     token_set;                 /* token value itself is never exposed */
     uint32_t funcs_mask;                /* bit i = enabled for pc_cmd_id_t i */
     int8_t   gpio[PC_CFG_GPIO_SLOTS];   /* -1 = NC */
+    uint8_t  level[PC_CFG_GPIO_SLOTS];  /* PC_CFG_LEVEL_HIGH / _LOW */
     uint16_t short_press_ms;            /* POWER_ON / WAKE_UP / PWR_RESET pulse */
     uint16_t long_press_ms;             /* FORCE_POWER_OFF hold */
 } pc_config_snapshot_t;
@@ -69,6 +81,7 @@ typedef struct {
     bool set_timeout; int timeout_ms;
     bool set_funcs;   uint32_t funcs_mask;
     bool set_gpio[PC_CFG_GPIO_SLOTS]; int gpio[PC_CFG_GPIO_SLOTS]; /* -1 = NC */
+    bool set_level[PC_CFG_GPIO_SLOTS]; int level[PC_CFG_GPIO_SLOTS]; /* 0/1 */
     bool set_timings; int short_ms; int long_ms;
 } pc_config_patch_t;
 

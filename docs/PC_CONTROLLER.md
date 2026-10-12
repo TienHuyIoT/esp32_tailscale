@@ -121,11 +121,12 @@ UI, and appears in the hardware layer's serial log lines.
 ## Runtime configuration (NVS) and the device Settings UI
 
 Host/port/timeout, the agent token, per-function Enable flags, GPIO
-mapping and press timings are **runtime settings** persisted in NVS
-(namespace `pc_ctl`, versioned blobs) - Kconfig values are only the
-first-boot defaults. They are edited at `http://<vpn-ip>/pc/settings`
-(linked from the control page) via `GET/POST /api/v1/config`,
-`POST /api/v1/config/token` and `POST /api/v1/config/test`.
+mapping (pin + active level) and press timings are **runtime settings**
+persisted in NVS (namespace `pc_ctl`, versioned blobs) - Kconfig values
+are only the first-boot defaults. They are edited at
+`http://<vpn-ip>/pc/settings` (linked from the control page) via
+`GET/POST /api/v1/config`, `POST /api/v1/config/token` and
+`POST /api/v1/config/test`.
 
 - Writes happen only on explicit saves (no NVS churn while editing), and
   `pc_config_apply()` validates everything first and persists both blobs
@@ -139,7 +140,8 @@ first-boot defaults. They are edited at `http://<vpn-ip>/pc/settings`
   GPIO mapping. Hardware functions need Enable **and** a mapped GPIO
   (`403 function_disabled` / `403 gpio_not_configured` otherwise).
 - Settings survive reboots (verified boot log: restored
-  `funcs=0x3f gpio=[5,5,6,5] short=300 long=5000`), and a reboot can
+  `funcs=0x3f gpio=[13,13,14,13] lvl=[1,1,1,1] short=500 long=5000` -
+  levels 1/1/1/1 = all four outputs active-HIGH), and a reboot can
   never enable real execution.
 - `POST /api/v1/config/test` queues a one-shot agent probe executed by
   the `pc_ctl` task (never from the HTTP handler); the result appears as
@@ -164,6 +166,31 @@ Timings are runtime settings with documented bounds (short press
 100-2000 ms, default 300; long press 1000-15000 ms, default 5000) and
 were NOT physically validated - verify on the real circuit before
 enabling `CONFIG_PCCTL_ENABLE_HW_GPIO`.
+
+Each hardware function also has an **active level** (runtime setting,
+default HIGH): the GPIO level that "presses" the front-panel input; idle
+is the opposite level. Configure it in the same GPIO mapping card:
+
+- **Active HIGH** (default): drive the line HIGH to press - suits the
+  classic transistor/optocoupler stage into an active-low
+  PWR_SW#/RESET_SW# input. Idle LOW.
+- **Active LOW**: drive the line LOW to press - for low-trigger circuits
+  (opto modules with inverted input, PNP stages). Idle HIGH.
+
+Rules enforced in firmware:
+
+- Functions **sharing a pin must use the same active level** (`409
+  gpio_conflict` otherwise) - the level belongs to the interface circuit,
+  not to the function.
+- The pulse is glitch-free by construction: the output latch is
+  pre-loaded with the **idle** level *before* the output driver is
+  enabled, so switching direction can never emit a false press.
+- The external pull resistor in the interface circuit must match the
+  chosen polarity: pulldown for active-HIGH, pullup for active-LOW, so a
+  floating pin (boot, reset, ESP32 purely powered off) cannot press.
+- Blobs written by the first firmware (NVS `"hw"` v1, no levels) are
+  migrated in RAM on first boot - levels default to HIGH (= v1 behavior)
+  and the v2 layout is persisted on the next explicit Settings save.
 
 ## Windows Manager UI (local-only)
 
@@ -417,8 +444,9 @@ the mock/hw vtable in `pc_hw.h`. Before enabling:
 1. Design an electrically verified interface to the motherboard
    front-panel pins (PWR_SW# / RESET_SW# are active-low logic signals -
    use a transistor/optocoupler/isolated relay; never wire a GPIO
-   directly; add an external pulldown so floating pins cannot press
-   anything during boot).
+   directly; add an external pull resistor matching the configured active
+   level - pulldown for active-HIGH, pullup for active-LOW - so floating
+   pins cannot press anything during boot).
 2. Verify with a meter/scope, then enable `PCCTL_ENABLE_HW_GPIO=y` in
    `FULL` mode and test one action at a time (the cooldown protects
    against repeats).

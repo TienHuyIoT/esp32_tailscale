@@ -18,6 +18,7 @@
 #include "esp_err.h"
 #include "pc_cmd.h"
 #include "sdkconfig.h"
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -27,6 +28,7 @@ extern "C" {
 
 typedef struct {
     int gpio_pin;       /* runtime-selected output (>= 0; caller validates) */
+    bool active_high;   /* true = HIGH asserts; false = LOW (idle = opposite) */
     uint32_t pulse_ms;  /* short-press duration (POWER_ON/WAKE_UP/PWR_RESET) */
     uint32_t hold_ms;   /* FORCE_POWER_OFF hold override (0 = default long) */
 } pc_hw_params_t;
