@@ -400,7 +400,7 @@ deliberate re-provision (it destroys the Tailnet identity).
 
 ### Windows agent
 
-See `tools/pc_agent/README.md` (setup, firewall rule, Task Scheduler,
+See `tools/pc_agent/README.md` (setup, firewall rule, logon auto-start,
 test matrix). Current dev setup: started manually in dry-run, bound to
 the Tailscale IP.
 

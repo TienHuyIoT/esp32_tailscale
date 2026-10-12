@@ -215,6 +215,53 @@ It does **not** start the `pc_agent` service - press **Start** in the UI
 when you want the agent up. Tip: right-click the file, then
 *Send to -> Desktop (create shortcut)* for a true one-click icon.
 
+### Auto-start at logon (optional)
+
+Double-click **`install_autostart.cmd`** to register the PC-side tooling
+so it comes back by itself after a reboot or a logon. **Per-user only,
+no admin rights**, fully reversible:
+
+```cmd
+install_autostart.cmd            rem manager shortcut + pc_agent task (= "all")
+install_autostart.cmd manager    rem only the manager Startup shortcut
+install_autostart.cmd agent      rem only the pc_agent Scheduled Task
+install_autostart.cmd /status    rem report what is currently installed
+install_autostart.cmd /uninstall rem remove both
+```
+
+What it creates:
+
+- **Manager**: a Startup-folder shortcut `PC Agent Manager.lnk`
+  (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\`) running
+  `start_pc_manager.cmd` minimized - at logon you get the same fresh
+  manager window + browser tab as double-clicking the launcher.
+- **pc_agent**: a Task Scheduler task `MicroLink PC Agent` - trigger
+  *At log on* of the current user with a **30 s delay**; action is the
+  windowless launcher (`pyw -3` / `pythonw`) running
+  `pc_agent.py --config "<repo>\tools\pc_agent\config.json"`, working
+  directory `tools\pc_agent` so a relative `log_file` still lands next
+  to the scripts. The delay lets Tailscale come up first, because
+  `bind_host: "auto"` is resolved once at agent start - binding too
+  early would silently fall back to `127.0.0.1` (see "Automatic start"
+  above).
+
+Notes:
+
+- No restart-on-failure, on purpose: **Stop** in the manager UI means
+  stopped until you press Start again (or the next logon).
+- Only the user who ran the installer is affected - a multi-user PC
+  needs this run once per user.
+- It never touches `dry_run` / `allow_real_execution` - starting the
+  process does not arm real execution.
+- Test without a reboot: stop the agent first if the manager shows it
+  running (the task cannot detect an agent started outside it), then
+  `schtasks /Run /TN "MicroLink PC Agent"`; confirm `pc_agent.log`
+  shows the bind line for the Tailscale IP. The full check is a log
+  off / log on.
+- Inspect any time with `install_autostart.cmd /status`; remove with
+  `install_autostart.cmd /uninstall` (or delete the shortcut / task in
+  the Windows UIs).
+
 ## Limitations (documented, intentional)
 
 - `POST /api/v1/cancel-shutdown` runs `shutdown /a`, which aborts **any**
