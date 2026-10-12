@@ -97,6 +97,7 @@ footer{margin:22px 0 8px;font-size:.72em;color:#484f58;text-align:center;line-he
  <h2>Commands</h2>
  <div class="grid" id="cmdGrid"></div>
  <p class="hint" id="modeHint"></p>
+ <p class="hint" id="cdHint"></p>
  <h2>Log</h2>
  <ul id="logList"></ul>
  <footer>MicroLink PC Control &middot; MOCK mode performs no physical action and no real Windows operation.<br>
@@ -178,6 +179,9 @@ function buildButtons(){
 function commandDisabled(c){
   if (busy) return 'another request is in flight';
   if (st && st.active_command) return 'a command is already running';
+  if (c.route === 'hardware' && st && st.hw_cooldown_ms > 0) {
+    return 'hardware cooldown - unlocks in ~' + Math.ceil(st.hw_cooldown_ms / 1000) + ' s';
+  }
   if (c.route === 'windows' && st && st.mode !== 'MOCK') {
     if (!st.esp32 || st.esp32.state !== 'CONNECTED') return 'tailnet not connected';
     if (st.service && st.service.reachable === false) return 'Windows agent unreachable';
@@ -263,6 +267,10 @@ function render(s){
     HARDWARE: 'MODE: HARDWARE - real routing. Verify the circuit and the agent before using these controls.'
   };
   $('modeHint').textContent = hints[s.mode] || '';
+  const cdms = (s.hw_cooldown_ms && s.hw_cooldown_ms > 0) ? s.hw_cooldown_ms : 0;
+  $('cdHint').textContent = cdms > 0
+    ? ('Hardware cooldown: ' + Math.ceil(cdms / 1000) + ' s remaining - hardware buttons unlock automatically.')
+    : '';
 
   CMDS.forEach(function(c){
     const b = $('btn-' + c.id);
@@ -386,7 +394,13 @@ function schedule(){
   if (pollTimer) clearTimeout(pollTimer);
   const base = (st && st.poll_interval_s ? st.poll_interval_s : 10) * 1000;
   const mult = Math.min(Math.max(fails, 1), 8);
-  const delay = document.hidden ? Math.max(base, 15000) : base * mult;
+  let delay = document.hidden ? Math.max(base, 15000) : base * mult;
+  /* While a command is running or the hardware cooldown counts down, poll
+   * every second: the buttons must unlock exactly when the firmware would
+   * accept them again (at the normal cadence a finished 0.5 s pulse felt
+   * like a 10 s lockout). */
+  const busyNow = !!(st && (st.active_command || (st.hw_cooldown_ms > 0)));
+  if (!document.hidden && busyNow && fails === 0) delay = 1000;
   pollTimer = setTimeout(refresh, delay);
 }
 document.addEventListener('visibilitychange', function(){ if (!document.hidden) refresh(); });

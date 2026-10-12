@@ -65,6 +65,11 @@ bool pc_controller_get(const char *request_id, pc_cmd_slot_t *out_slot);
 /** "MOCK" / "MIXED" / "HARDWARE" (reported in the API + UI). */
 const char *pc_controller_mode_str(void);
 
+/** Remaining hardware cooldown in ms (0 = hardware commands ready).
+ *  Mirrors the submit-time check, so the UI countdown can never unlock
+ *  earlier than the firmware would accept (reported in /api/v1/status). */
+uint32_t pc_controller_hw_cooldown_remaining_ms(void);
+
 /** Availability for GET /api/v1/commands (reason is a static string). */
 void pc_controller_command_availability(const pc_cmd_def_t *def,
                                         bool *available, const char **reason);

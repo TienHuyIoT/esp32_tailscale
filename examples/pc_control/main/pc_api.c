@@ -264,6 +264,7 @@ static esp_err_t handler_status(httpd_req_t *req) {
     }
 
     cJSON_AddNumberToObject(json, "poll_interval_s", CONFIG_PCCTL_POLL_INTERVAL_S);
+    cJSON_AddNumberToObject(json, "hw_cooldown_ms", pc_controller_hw_cooldown_remaining_ms());
 
     if (snap.test_valid) {
         cJSON *t = cJSON_AddObjectToObject(json, "last_test");

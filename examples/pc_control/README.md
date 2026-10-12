@@ -151,6 +151,10 @@ curl.exe -s -w '|%{http_code}' -X POST -H "X-PC-Token: <token>" `
    - **PWR Reset / Force Power Off** - the confirm button only unlocks
      after typing the exact command name; in MOCK mode the result is
      simulated and clearly labelled.
+   - Hardware commands have a short cooldown (`CONFIG_PCCTL_HW_COOLDOWN_MS`,
+     default 5 s): after a hardware action the hardware buttons show the
+     remaining seconds and unlock automatically - the page polls every
+     second while a command runs or the cooldown counts down.
 4. If the page seems stale after a firmware update, hard-refresh
    (Ctrl+F5; on iOS Safari: hold reload -> "Request Desktop Website"
    toggle or clear site data).

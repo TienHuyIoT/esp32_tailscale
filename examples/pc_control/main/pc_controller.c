@@ -70,6 +70,15 @@ static bool win_mock_mode(void) { return PC_WIN_MOCK; }
 
 const char *pc_controller_mode_str(void) { return PC_MODE_STR; }
 
+uint32_t pc_controller_hw_cooldown_remaining_ms(void) {
+    int64_t last = s_last_hw_us;                   /* 0 = never ran a hw cmd */
+    if (last == 0) return 0;
+    int64_t elapsed_ms = (esp_timer_get_time() - last) / 1000;
+    if (elapsed_ms < 0) elapsed_ms = 0;            /* defensive: clock jumps */
+    if (elapsed_ms >= CONFIG_PCCTL_HW_COOLDOWN_MS) return 0;
+    return (uint32_t)(CONFIG_PCCTL_HW_COOLDOWN_MS - elapsed_ms);
+}
+
 void pc_controller_command_availability(const pc_cmd_def_t *def,
                                         bool *available, const char **reason) {
     *available = true;

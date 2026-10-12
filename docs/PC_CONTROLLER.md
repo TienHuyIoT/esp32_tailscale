@@ -59,7 +59,9 @@ Hardware commands and Windows commands are routed strictly separately.
 - Duplicate-request protection: one active command at a time (409 with
   the active id), idempotent replay by `request_id`, and a hardware
   cooldown window (`PCCTL_HW_COOLDOWN_MS`, default 5 s) that rejects
-  repeat hardware commands even with fresh ids.
+  repeat hardware commands even with fresh ids. The remaining cooldown
+  is reported as `hw_cooldown_ms` in `/api/v1/status`; the control page
+  shows it and fast-polls (1 s) until the hardware buttons unlock.
 
 ## Repository layout (this feature)
 
@@ -246,7 +248,10 @@ Rules (enforced in `pc_controller.c` / `pc_state.c`):
   execution. Auto-generated ids look like `c-<boot hex><random>`.
 - Hardware route: configurable cooldown (`PCCTL_HW_COOLDOWN_MS`, default
   5 s) between consecutive hardware commands, even with different ids
-  (`409 cooldown` + `retry_after_ms`).
+  (`409 cooldown` + `retry_after_ms`). The UI mirrors it: while the
+  cooldown is live the hardware buttons are disabled with the remaining
+  seconds as their reason, the page polls every second until they
+  unlock, then returns to the normal cadence.
 - `PWR_RESET` / `FORCE_POWER_OFF` require `"confirm":"<COMMAND_NAME>"`;
   `FORCE_POWER_OFF` additionally accepts `params.hold_ms` (1000..15000).
 - Cancellation is honest: a running hardware action yields `409
@@ -284,7 +289,7 @@ All responses are JSON. Mutations require the API token; reads do not
 | Route | Method | Auth | Notes |
 |-------|--------|------|-------|
 | `/pc` | GET | no | embedded UI (single page) |
-| `/api/v1/status` | GET | no | fw/esp32/service/pc + active/last command + auth info |
+| `/api/v1/status` | GET | no | fw/esp32/service/pc + active/last command + auth info + `poll_interval_s` / `hw_cooldown_ms` |
 | `/api/v1/commands` | GET | no | six commands with `available`/`unavailable_reason`, route, confirm/cancel flags |
 | `/api/v1/commands` | POST | **yes** | submit `{"command","request_id"?,"confirm"?,"params"?}` |
 | `/api/v1/commands/{id}` | GET | no | state/result for a request id (active or history) |
@@ -304,6 +309,7 @@ Example status response (trimmed; captured on hardware):
   "last_command": {"request_id":"t-shut-1","command":"SHUTDOWN","state":"succeeded","simulated":true,
                    "detail":"agent accepted SHUTDOWN request (dry-run: nothing real was scheduled)"},
   "poll_interval_s": 10,
+  "hw_cooldown_ms": 0,
   "auth": {"token_configured": true, "mutations_allowed": true}
 }
 ```
@@ -410,9 +416,14 @@ the Tailscale IP.
 | E2E (MIXED) | SHUTDOWN/RESTART through the tunnel to the dry-run agent; conflict; agent down/up; 503 gating; ESP32 reboot | succeeded with honest dry-run detail; structured `busy` surfaced correctly; recovery verified |
 | Regression | UDP echo :9000 kept; config UI `/` and `/api/status` untouched; NVS identity retained across ~8 flashes | operational |
 | GPIO path | temporary `PCCTL_ENABLE_HW_GPIO=y` compile check (not flashed, nothing wired) | compiles clean (a shift-count bug was caught and fixed this way) |
+| Trigger level + cooldown | live `FULL` device: `GET/POST gpio_levels` matrix (200 / 400 invalid / 409 shared-pin mismatch), NVS v1 -> v2 migration + persistence in boot logs, one user-approved `POWER_ON` pulse with `hw_cooldown_ms` sampled during the cooldown | levels round-trip and survive reboot; the pulse used the configured level (logged active-LOW after the operator switched the outputs in the Settings UI); `hw_cooldown_ms` counted 4372 -> 0 ms; duplicate submit -> `409 cooldown` with matching `retry_after_ms`; control-page JS passes `node --check` |
 
 Deliberately **not** performed: real Windows shutdown/restart
-execution, GPIO pulses on real hardware, Wake-on-LAN transmission.
+execution, Wake-on-LAN transmission. One `POWER_ON` pulse (500 ms,
+GPIO13) WAS issued with explicit user consent during the trigger-level /
+cooldown verification above - the command reported `succeeded` and the
+cooldown engaged; the electrical effect on the front-panel circuit was
+not independently measured (no meter attached).
 
 ## Known limitations and watch items
 
