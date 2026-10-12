@@ -54,7 +54,7 @@ function Install-Manager {
         Ok "installed: $lnkPath"
         Step ("target   : " + $py.Exe + " " + $lnkArgs)
         Step "at logon nothing pops up (no window, no browser tab)"
-        Step "open http://127.0.0.1:8766 yourself; to stop it run start_pc_manager.cmd"
+        Step "open http://127.0.0.1:8766 yourself; to stop it end pythonw.exe in Task Manager"
     } else {
         Bad "shortcut was not created"
     }

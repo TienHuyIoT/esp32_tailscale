@@ -201,31 +201,34 @@ token values.
 
 ### One-click launcher (Windows)
 
-Double-click **`start_pc_manager.cmd`** (or a desktop shortcut to it):
+Double-click **`start_pc_manager.cmd`** (or a desktop shortcut to it).
+By default it runs the manager **windowless** (through `pyw` /
+`pythonw`) - no window, no browser tab:
 
 1. kills any stale `pc_manager.py` instances first - this prevents two
    managers double-binding `127.0.0.1:8766` (Windows `SO_REUSEADDR`) and
    answering the UI from config one of them loaded long ago;
-2. starts one fresh manager in its own **"PC Agent Manager"** window
-   (closing that window, or Ctrl+C in it, stops the manager);
-3. waits for port 8766, then opens `http://127.0.0.1:8766/` in your
-   default browser.
+2. starts one fresh manager, windowless;
+3. waits for port 8766 and confirms it is up.
+
+Open `http://127.0.0.1:8766` yourself when you want the UI; stop the
+manager by ending `pythonw.exe` in Task Manager (or replace it with a
+visible one, below). This is exactly what the logon auto-start runs.
+
+Window mode - the old behavior, only for watching the live log console:
+
+```cmd
+start_pc_manager.cmd window
+```
+
+Starts the manager in its own visible "PC Agent Manager" window and
+opens the UI in your browser; closing that window (or Ctrl+C in it)
+stops the manager. The launcher recycles any running instance first,
+so switching between the two modes never leaves duplicates behind.
 
 It does **not** start the `pc_agent` service - press **Start** in the UI
 when you want the agent up. Tip: right-click the file, then
 *Send to -> Desktop (create shortcut)* for a true one-click icon.
-
-Quiet variant - no manager window, no browser tab:
-
-```cmd
-start_pc_manager.cmd quiet
-```
-
-The manager runs windowless (through `pyw` / `pythonw`); open
-`http://127.0.0.1:8766` yourself when you need the UI, and stop it by
-ending `pythonw.exe` in Task Manager or by re-running the launcher
-(which recycles the quiet instance first). This is the mode the logon
-auto-start uses.
 
 ### Auto-start at logon (optional)
 
@@ -248,10 +251,9 @@ What it creates:
   starts `pc_manager.py` **windowless** (same `pyw -3` launcher as the
   agent) - at logon nothing pops up: no window, no browser tab. Open
   `http://127.0.0.1:8766` when you want the UI; stop it by ending
-  `pythonw.exe` in Task Manager or by running `start_pc_manager.cmd`
-  (visible window; it recycles the quiet instance first). Prefer the
-  visible window at logon? Point the shortcut at `start_pc_manager.cmd`
-  with no arguments instead.
+  `pythonw.exe` in Task Manager (or `start_pc_manager.cmd window`
+  replaces it with a visible one). Prefer the visible window at logon?
+  Point the shortcut at `start_pc_manager.cmd` with argument `window`.
 - **pc_agent**: a Task Scheduler task `MicroLink PC Agent` - trigger
   *At log on* of the current user with a **30 s delay**; action is the
   windowless launcher (`pyw -3` / `pythonw`) running

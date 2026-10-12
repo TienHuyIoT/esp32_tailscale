@@ -4,38 +4,54 @@ rem  start_pc_manager.cmd - one-click launcher for the PC Agent Manager
 rem  (tools/pc_agent). Just double-click this file.
 rem
 rem  Modes:
-rem    start_pc_manager.cmd          manager window + browser tab
-rem    start_pc_manager.cmd quiet    windowless manager (pyw/pythonw),
-rem                                  no browser tab; open the UI yourself
-rem                                  at http://127.0.0.1:8766
+rem    start_pc_manager.cmd          windowless manager (pyw/pythonw) -
+rem                                  no window, no browser tab; open the
+rem                                  UI yourself at http://127.0.0.1:8766
+rem    start_pc_manager.cmd window   manager window + browser tab (for
+rem                                  watching the live log in a console)
 rem
 rem  What it does:
 rem    1. kills any stale pc_manager.py instances (and their console
 rem       windows) first - this prevents two managers double-binding
 rem       127.0.0.1:8766 (Windows SO_REUSEADDR) and answering the UI
 rem       from stale in-RAM config;
-rem    2. starts ONE fresh manager (visible window, or windowless with
-rem       the quiet mode);
-rem    3. waits for the port; opens the UI in your browser (the quiet
-rem       mode skips the browser and prints how to stop the manager).
+rem    2. starts ONE fresh manager (windowless by default);
+rem    3. waits for the port and confirms it is up ("window" mode
+rem       also opens the UI in your browser).
 rem
 rem  It does NOT start the pc_agent service - use the Start button in
-rem  the UI. The logon auto-start (install_autostart.cmd) uses the
-rem  windowless form of this script.
+rem  the UI. The logon auto-start (install_autostart.cmd) runs the
+rem  same windowless start.
 rem =====================================================================
 setlocal EnableExtensions
 cd /d "%~dp0"
 
-set "QMODE="
+set "QMODE=1"
 set "ARG1=%~1"
+if /i "%ARG1%"=="window" set "QMODE="
+if /i "%ARG1%"=="/window" set "QMODE="
 if /i "%ARG1%"=="quiet" set "QMODE=1"
 if /i "%ARG1%"=="/quiet" set "QMODE=1"
 
 echo [1/3] Cleanup: stopping stale pc_manager instances (if any) ...
 powershell -NoProfile -Command "$p = @(Get-CimInstance Win32_Process | Where-Object { (($_.Name -eq 'python.exe' -or $_.Name -eq 'pythonw.exe') -and $_.CommandLine -match 'pc_manager') -or ($_.Name -eq 'cmd.exe' -and $_.CommandLine -match 'pc_manager\.py') }); if ($p.Count -eq 0) { Write-Host '      - none running' } else { $p | ForEach-Object { Write-Host ('      - stopped PID ' + $_.ProcessId + ' (' + $_.Name + ')'); Stop-Process -Id $_.ProcessId -Force } }"
 
-if defined QMODE goto :start_quiet
+if not defined QMODE goto :start_window
 
+rem --- windowless Python: pyw first, then pythonw ---
+set "PYQUIET="
+where pyw >nul 2>&1 && set "PYQUIET=pyw -3"
+if not defined PYQUIET (where pythonw >nul 2>&1 && set "PYQUIET=pythonw")
+if not defined PYQUIET (
+  echo [ERROR] No windowless Python found on PATH ^(tried: pyw, pythonw^).
+  pause
+  exit /b 1
+)
+echo [2/3] Starting pc_manager windowless ^(interpreter: %PYQUIET%^) ...
+start "" %PYQUIET% pc_manager.py --port 8766
+goto :started
+
+:start_window
 rem --- pick a Python 3 interpreter (py launcher first, then python) ---
 set "PYCMD="
 where py >nul 2>&1 && set "PYCMD=py -3"
@@ -48,20 +64,6 @@ if not defined PYCMD (
 
 echo [2/3] Starting pc_manager in a new window ^(interpreter: %PYCMD%^) ...
 start "PC Agent Manager" cmd /k "%PYCMD% pc_manager.py --port 8766"
-goto :started
-
-:start_quiet
-rem --- windowless Python: pyw first, then pythonw ---
-set "PYQUIET="
-where pyw >nul 2>&1 && set "PYQUIET=pyw -3"
-if not defined PYQUIET (where pythonw >nul 2>&1 && set "PYQUIET=pythonw")
-if not defined PYQUIET (
-  echo [ERROR] No windowless Python found on PATH ^(tried: pyw, pythonw^).
-  pause
-  exit /b 1
-)
-echo [2/3] Starting pc_manager windowless ^(interpreter: %PYQUIET%^) ...
-start "" %PYQUIET% pc_manager.py --port 8766
 
 :started
 
@@ -95,8 +97,9 @@ exit /b 0
 echo       - manager is up (windowless). No browser tab was opened.
 echo.
 echo Open http://127.0.0.1:8766 yourself when you need the UI.
-echo To stop it: re-run start_pc_manager.cmd (visible window) - it stops
-echo the windowless instance first - or end pythonw.exe in Task Manager.
+echo To stop it: end pythonw.exe in Task Manager, or run this script
+echo with "window" (start_pc_manager.cmd window) to replace it with a
+echo visible window.
 echo NOTE: the pc_agent service is NOT started - press Start in the UI.
 ping -n 6 127.0.0.1 >nul
 exit /b 0
