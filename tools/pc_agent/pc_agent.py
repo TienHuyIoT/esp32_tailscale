@@ -43,6 +43,9 @@ MAX_BODY = 8 * 1024
 DEFAULT_DELAY_S = 60
 MIN_DELAY_S = 5
 MAX_DELAY_S = 3600
+# Console children of a windowless (pythonw) process would each get a
+# fresh visible console window - hide them all.
+CREATE_NO_WINDOW = 0x08000000
 
 log = logging.getLogger("pc_agent")
 
@@ -67,7 +70,8 @@ def tailscale_ipv4():
     """Return the host's Tailscale IPv4 address, or None."""
     try:
         out = subprocess.run(["tailscale", "ip", "-4"], capture_output=True,
-                             text=True, timeout=5)
+                             text=True, timeout=5,
+                             creationflags=CREATE_NO_WINDOW)
         if out.returncode == 0:
             for line in out.stdout.splitlines():
                 line = line.strip()
@@ -141,7 +145,8 @@ def run_command(cmd, timeout=10):
     """Run an allowlisted command list. Returns (ok, detail-without-secrets)."""
     try:
         proc = subprocess.run(cmd, shell=False, capture_output=True,
-                              timeout=timeout)
+                              timeout=timeout,
+                              creationflags=CREATE_NO_WINDOW)
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"subprocess failed: {exc.__class__.__name__}"
     if proc.returncode != 0:

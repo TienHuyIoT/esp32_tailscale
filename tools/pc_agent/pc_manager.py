@@ -33,6 +33,9 @@ VERSION = "0.2.0"
 DEFAULT_PORT = 8766
 HERE = Path(__file__).resolve().parent
 PID_FILE = HERE / "pc_agent.pid"
+# Console children of a windowless (pythonw) process would each get a
+# fresh visible console window - hide them all.
+CREATE_NO_WINDOW = 0x08000000
 
 log = logging.getLogger("pc_manager")
 
@@ -58,7 +61,8 @@ def harden_acl(path: Path) -> str:
     try:
         r = subprocess.run(["icacls", str(path), "/inheritance:r",
                             "/grant:r", f"{user}:F"],
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, text=True, timeout=10,
+                           creationflags=CREATE_NO_WINDOW)
         return "ok" if r.returncode == 0 else f"icacls rc={r.returncode}"
     except (OSError, subprocess.SubprocessError) as exc:
         return f"icacls failed: {exc.__class__.__name__}"
@@ -83,7 +87,8 @@ def tailscale_ipv4():
         return None, "tailscale CLI not found"
     try:
         r = subprocess.run([exe, "ip", "-4"], capture_output=True,
-                           text=True, timeout=5)
+                           text=True, timeout=5,
+                           creationflags=CREATE_NO_WINDOW)
         if r.returncode == 0:
             for line in r.stdout.splitlines():
                 line = line.strip()
@@ -108,7 +113,8 @@ def process_alive(pid):
         return False
     try:
         r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, text=True, timeout=10,
+                           creationflags=CREATE_NO_WINDOW)
         return "python" in (r.stdout or "").lower()
     except (OSError, subprocess.SubprocessError):
         return False
@@ -127,7 +133,8 @@ def pid_is_agent(pid):
         cmd = ("Get-CimInstance Win32_Process -Filter \"ProcessId=%d\" | "
                "Select-Object -ExpandProperty CommandLine" % pid)
         r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd],
-                           capture_output=True, text=True, timeout=15)
+                           capture_output=True, text=True, timeout=15,
+                           creationflags=CREATE_NO_WINDOW)
         return "pc_agent" in (r.stdout or "")
     except (OSError, subprocess.SubprocessError):
         return False
@@ -139,7 +146,8 @@ def find_agent_pid():
                "Where-Object { $_.CommandLine -match 'pc_agent' } | "
                "Select-Object -First 1 -ExpandProperty ProcessId")
         r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd],
-                           capture_output=True, text=True, timeout=15)
+                           capture_output=True, text=True, timeout=15,
+                           creationflags=CREATE_NO_WINDOW)
         for line in (r.stdout or "").splitlines():
             line = line.strip()
             if line.isdigit():
@@ -215,7 +223,8 @@ def stop_service():
         return {"ok": False, "running": True,
                 "detail": "pidfile pid is not a pc_agent process - refusing to kill"}
     r = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True,
+                       creationflags=CREATE_NO_WINDOW)
     time.sleep(0.5)
     still = process_alive(pid)
     if not still:
