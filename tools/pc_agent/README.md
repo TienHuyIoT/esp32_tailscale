@@ -215,6 +215,18 @@ It does **not** start the `pc_agent` service - press **Start** in the UI
 when you want the agent up. Tip: right-click the file, then
 *Send to -> Desktop (create shortcut)* for a true one-click icon.
 
+Quiet variant - no manager window, no browser tab:
+
+```cmd
+start_pc_manager.cmd quiet
+```
+
+The manager runs windowless (through `pyw` / `pythonw`); open
+`http://127.0.0.1:8766` yourself when you need the UI, and stop it by
+ending `pythonw.exe` in Task Manager or by re-running the launcher
+(which recycles the quiet instance first). This is the mode the logon
+auto-start uses.
+
 ### Auto-start at logon (optional)
 
 Double-click **`install_autostart.cmd`** to register the PC-side tooling
@@ -232,9 +244,14 @@ install_autostart.cmd /uninstall rem remove both
 What it creates:
 
 - **Manager**: a Startup-folder shortcut `PC Agent Manager.lnk`
-  (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\`) running
-  `start_pc_manager.cmd` minimized - at logon you get the same fresh
-  manager window + browser tab as double-clicking the launcher.
+  (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\`) that
+  starts `pc_manager.py` **windowless** (same `pyw -3` launcher as the
+  agent) - at logon nothing pops up: no window, no browser tab. Open
+  `http://127.0.0.1:8766` when you want the UI; stop it by ending
+  `pythonw.exe` in Task Manager or by running `start_pc_manager.cmd`
+  (visible window; it recycles the quiet instance first). Prefer the
+  visible window at logon? Point the shortcut at `start_pc_manager.cmd`
+  with no arguments instead.
 - **pc_agent**: a Task Scheduler task `MicroLink PC Agent` - trigger
   *At log on* of the current user with a **30 s delay**; action is the
   windowless launcher (`pyw -3` / `pythonw`) running

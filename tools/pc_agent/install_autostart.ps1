@@ -31,26 +31,30 @@ function Test-Tailscale {
 }
 
 function Install-Manager {
-    Write-Host "[manager] Startup-folder shortcut -> start_pc_manager.cmd"
-    $target = Join-Path $HERE 'start_pc_manager.cmd'
-    if (-not (Test-Path -LiteralPath $target)) {
-        Bad "start_pc_manager.cmd is missing next to this script"
+    Write-Host "[manager] Startup shortcut -> windowless pc_manager (pyw/pythonw)"
+    $py = Find-AgentExe
+    if (-not $py) {
+        Bad "no windowless Python launcher (pyw.exe / pythonw.exe) on PATH"
         return
     }
+    $lnkArgs = $py.Pre + 'pc_manager.py --port 8766'
     $wsh = New-Object -ComObject WScript.Shell
     try {
         $lnk = $wsh.CreateShortcut($lnkPath)
-        $lnk.TargetPath = $target
+        $lnk.TargetPath = $py.Exe
+        $lnk.Arguments = $lnkArgs
         $lnk.WorkingDirectory = $HERE
-        $lnk.WindowStyle = 7   # minimized; the manager console still opens
-        $lnk.Description = 'MicroLink PC Agent Manager (http://127.0.0.1:8766)'
+        $lnk.WindowStyle = 7   # moot for a windowless target; kept consistent
+        $lnk.Description = 'MicroLink PC Agent Manager - windowless (UI: http://127.0.0.1:8766)'
         $lnk.Save()
     } finally {
         [void][Runtime.InteropServices.Marshal]::ReleaseComObject($wsh)
     }
     if (Test-Path -LiteralPath $lnkPath) {
         Ok "installed: $lnkPath"
-        Step "at logon this opens the manager window + the UI in your browser"
+        Step ("target   : " + $py.Exe + " " + $lnkArgs)
+        Step "at logon nothing pops up (no window, no browser tab)"
+        Step "open http://127.0.0.1:8766 yourself; to stop it run start_pc_manager.cmd"
     } else {
         Bad "shortcut was not created"
     }
@@ -137,7 +141,10 @@ function Show-Status {
     Write-Host "[status]"
     if (Test-Path -LiteralPath $lnkPath) {
         $wsh = New-Object -ComObject WScript.Shell
-        try { $tgt = $wsh.CreateShortcut($lnkPath).TargetPath } finally {
+        try {
+            $sc = $wsh.CreateShortcut($lnkPath)
+            $tgt = $sc.TargetPath + " " + $sc.Arguments
+        } finally {
             [void][Runtime.InteropServices.Marshal]::ReleaseComObject($wsh)
         }
         Ok "manager shortcut: installed -> $tgt"
@@ -155,6 +162,11 @@ function Show-Status {
     if ($py) { Step "windowless python: $($py.Exe)" } else { Step "windowless python: NOT FOUND" }
     if (Test-Path -LiteralPath $cfgPath) { Step "config.json: present" } else { Step "config.json: MISSING" }
     if (Test-Tailscale) { Step "tailscale CLI: found" } else { Step "tailscale CLI: NOT FOUND" }
+    $live = $false
+    $c = New-Object Net.Sockets.TcpClient
+    try { $live = $c.ConnectAsync('127.0.0.1', 8766).Wait(500) } catch { }
+    try { $c.Close() } catch { }
+    if ($live) { Step "manager on 127.0.0.1:8766: listening" } else { Step "manager on 127.0.0.1:8766: not listening" }
 }
 
 switch ($Mode) {

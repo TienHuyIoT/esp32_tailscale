@@ -14,7 +14,8 @@ rem    install_autostart.cmd /uninstall   remove both
 rem
 rem  What it creates:
 rem    1. "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\
-rem       PC Agent Manager.lnk" -> start_pc_manager.cmd (minimized);
+rem       PC Agent Manager.lnk" -> windowless pc_manager (pyw/pythonw;
+rem       no window, no browser tab at logon);
 rem    2. Task Scheduler task "MicroLink PC Agent": at logon of this user
 rem       with a 30 s delay, windowless python (pyw/pythonw) running
 rem       pc_agent.py --config "<full path>\config.json".
