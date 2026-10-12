@@ -142,8 +142,8 @@ def pid_is_agent(pid):
 def find_agent_pid():
     """Locate an externally-started pc_agent process (adoption support)."""
     try:
-        cmd = ("Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-               "Where-Object { $_.CommandLine -match 'pc_agent' } | "
+        cmd = ("Get-CimInstance Win32_Process | "
+               "Where-Object { $_.Name -match '^python(w)?[.]exe$' -and $_.CommandLine -match 'pc_agent' } | "
                "Select-Object -First 1 -ExpandProperty ProcessId")
         r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd],
                            capture_output=True, text=True, timeout=15,

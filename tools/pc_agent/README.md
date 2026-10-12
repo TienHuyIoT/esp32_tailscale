@@ -209,11 +209,14 @@ By default it runs the manager **windowless** (through `pyw` /
    managers double-binding `127.0.0.1:8766` (Windows `SO_REUSEADDR`) and
    answering the UI from config one of them loaded long ago;
 2. starts one fresh manager, windowless;
-3. waits for port 8766 and confirms it is up.
+3. waits for port 8766 and confirms it is up;
+4. starts the `pc_agent` service through the manager API (an agent that
+   is already running is adopted, never duplicated).
 
 Open `http://127.0.0.1:8766` yourself when you want the UI; stop the
 manager by ending `pythonw.exe` in Task Manager (or replace it with a
-visible one, below). This is exactly what the logon auto-start runs.
+visible one, below). The logon auto-start runs the same windowless
+manager start; the agent there comes from its own scheduled task.
 
 Window mode - the old behavior, only for watching the live log console:
 
@@ -226,9 +229,10 @@ opens the UI in your browser; closing that window (or Ctrl+C in it)
 stops the manager. The launcher recycles any running instance first,
 so switching between the two modes never leaves duplicates behind.
 
-It does **not** start the `pc_agent` service - press **Start** in the UI
-when you want the agent up. Tip: right-click the file, then
-*Send to -> Desktop (create shortcut)* for a true one-click icon.
+The launcher brings up both pieces (manager + agent); press **Stop** in
+the UI whenever you want just the agent down. Tip: right-click the
+file, then *Send to -> Desktop (create shortcut)* for a true one-click
+icon.
 
 ### Auto-start at logon (optional)
 
