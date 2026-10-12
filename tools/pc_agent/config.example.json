@@ -1,0 +1,12 @@
+{
+  "bind_host": "auto",
+  "port": 8765,
+  "token": "PUT-A-STRONG-TOKEN-HERE",
+  "dry_run": true,
+  "allow_real_execution": false,
+  "allow_no_token": false,
+  "allow_clients": ["100.64.0.0/10", "127.0.0.1"],
+  "functions": {"shutdown": true, "restart": true},
+  "default_delay_s": 60,
+  "log_file": "pc_agent.log"
+}

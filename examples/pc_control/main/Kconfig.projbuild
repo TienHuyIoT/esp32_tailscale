@@ -1,0 +1,134 @@
+menu "Example Configuration"
+
+    menu "PC Control - execution & API"
+
+        choice PCCTL_EXEC_MODE
+            prompt "Execution mode"
+            default PCCTL_EXEC_MODE_MOCK_ALL
+            help
+                MOCK_ALL: every command is simulated inside the firmware
+                (no GPIO, no Windows-agent contact). Default until the
+                Windows agent and the (future) physical circuit are
+                validated.
+
+                MIXED: POWER_ON / WAKE_UP / PWR_RESET / FORCE_POWER_OFF stay
+                simulated; SHUTDOWN and RESTART are sent to the Windows
+                agent (tools/pc_agent). Keep the agent in dry-run mode
+                until a human explicitly decides otherwise.
+
+                FULL: real routing. Hardware commands require
+                PCCTL_ENABLE_HW_GPIO (verified circuit); SHUTDOWN/RESTART
+                go to the Windows agent.
+
+            config PCCTL_EXEC_MODE_MOCK_ALL
+                bool "MOCK_ALL - simulate all six commands in firmware"
+            config PCCTL_EXEC_MODE_MIXED
+                bool "MIXED - hardware simulated, SHUTDOWN/RESTART via Windows agent"
+            config PCCTL_EXEC_MODE_FULL
+                bool "FULL - real routing (GPIO requires PCCTL_ENABLE_HW_GPIO)"
+        endchoice
+
+        config PCCTL_API_TOKEN
+            string "API token for browser UI -> ESP32 mutations (empty = disabled)"
+            default ""
+            help
+                Shared secret required (X-PC-Token or Authorization: Bearer)
+                on every POST under /api/v1/*. Generate with:
+                  python -c "import secrets; print(secrets.token_hex(24))"
+                Set via sdkconfig.credentials (gitignored) or menuconfig.
+                When empty, mutations are rejected with 403 unless
+                PCCTL_ALLOW_NO_TOKEN is explicitly enabled.
+
+        config PCCTL_ALLOW_NO_TOKEN
+            bool "Allow mutations without an API token (development only!)"
+            default n
+            help
+                Escape hatch for isolated lab use. NOT recommended: anyone
+                who can reach the device (tailnet or LAN) could then
+                power-cycle the PC. Leave disabled for real deployments.
+
+    endmenu
+
+    menu "PC Control - Windows agent"
+
+        config PCCTL_WIN_HOST
+            string "Agent host (tailnet hostname or VPN IP)"
+            default ""
+            help
+                Resolved against the local MicroLink peer table
+                (MagicDNS-style lookup, no DNS server needed). A plain
+                "100.x.y.z" value is used as-is. Empty by default - set
+                it in /pc/settings or here once the PC hostname is known.
+
+        config PCCTL_WIN_PORT
+            int "Agent TCP port"
+            default 8765
+            range 1 65535
+
+        config PCCTL_WIN_AGENT_TOKEN
+            string "Bearer token sent to the Windows agent"
+            default ""
+            help
+                Must match "token" in tools/pc_agent/config.json.
+                Leave empty only if you also run the agent without a token
+                (not recommended; the agent refuses to start unless
+                allow_no_token is explicitly set).
+
+        config PCCTL_POLL_INTERVAL_S
+            int "Agent status poll interval (seconds)"
+            default 10
+            range 3 300
+
+        config PCCTL_HTTP_TIMEOUT_MS
+            int "HTTP exchange timeout per agent request (ms)"
+            default 8000
+            range 2000 30000
+
+        config PCCTL_SHUTDOWN_DELAY_S
+            int "Shutdown/restart grace period requested from the agent (s)"
+            default 60
+            range 5 3600
+
+    endmenu
+
+    menu "PC Control - hardware safety"
+
+        config PCCTL_HW_COOLDOWN_MS
+            int "Minimum interval between hardware commands (ms)"
+            default 5000
+            range 1000 60000
+            help
+                Duplicate-request protection: a second hardware command
+                within this window is rejected with 409 even when it uses
+                a different request id.
+
+        config PCCTL_FORCE_OFF_HOLD_MS
+            int "FORCE_POWER_OFF default PWR_SW hold length (ms)"
+            default 5000
+            range 1000 15000
+            help
+                Seeds the runtime long-press default (Settings UI), used to
+                hold PWR_SW for FORCE_POWER_OFF. The mock implementation
+                simulates this duration instead.
+
+        config PCCTL_ENABLE_HW_GPIO
+            bool "Enable physical GPIO control (requires verified circuit)"
+            default n
+            help
+                Off by default and MUST stay off until an electrically
+                verified interface (transistor / optocoupler / relay with
+                proper isolation) exists between the ESP32 and the
+                motherboard front-panel pins. Never connect GPIOs directly
+                to PWR_SW# / RESET_SW#.
+
+                Pin mapping and pulse timing are configured at runtime in
+                the device Settings UI (NVS-backed); this switch only
+                compiles the physical GPIO implementation in.
+
+        # Pin mapping, pulse widths and function enables are configured at
+        # runtime in the device Settings UI (/pc/settings) and persisted in
+        # NVS; see pc_config.c and docs/PC_CONTROLLER.md "Configuration".
+
+    endmenu
+
+endmenu

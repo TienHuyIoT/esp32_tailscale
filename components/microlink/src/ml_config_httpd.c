@@ -1260,8 +1260,8 @@ esp_err_t ml_config_httpd_start(ml_config_ctx_t *ctx, microlink_t *ml) {
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = 6144;
-    /* 12 base handlers + /api/wifi/scan + (setup-mode catch-all) with margin */
-    config.max_uri_handlers = 16;
+    /* 13 base routes + 6 pc_control routes (/pc + /api/v1/...) */
+    config.max_uri_handlers = 32;
     config.uri_match_fn = httpd_uri_match_wildcard;
 
     esp_err_t err = httpd_start(&ctx->httpd, &config);
@@ -1313,6 +1313,10 @@ void ml_config_httpd_stop(ml_config_ctx_t *ctx) {
         ctx->httpd = NULL;
         ESP_LOGI(TAG, "HTTP config server stopped");
     }
+}
+
+struct httpd_data *ml_config_httpd_get_handle(ml_config_ctx_t *ctx) {
+    return ctx ? (struct httpd_data *)ctx->httpd : NULL;
 }
 
 void ml_config_httpd_deinit(ml_config_ctx_t *ctx) {

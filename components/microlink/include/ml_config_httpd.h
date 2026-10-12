@@ -28,7 +28,12 @@ extern "C" {
 #endif
 
 /* Forward declare — struct tag only, no typedef (microlink.h owns the typedef) */
-struct microlink_s;
+/* Opaque esp_http_server instance handle (struct httpd_data * ==
+ * httpd_handle_t). Forward-declared as a bare struct so esp_http_server.h
+ * stays out of this header. Fork-local addition (see
+ * ml_config_httpd_get_handle below), used by examples/pc_control. */
+struct microlink_s;   /* opaque MicroLink instance (microlink.h owns the typedef) */
+struct httpd_data;    /* opaque esp_http_server instance == httpd_handle_t */
 
 /* ============================================================================
  * NVS Storage Types (namespace: "ml_config")
@@ -112,6 +117,17 @@ typedef struct ml_config_ctx ml_config_ctx_t;
  * override Kconfig defaults for WiFi/auth key at boot.
  */
 ml_config_ctx_t *ml_config_httpd_init(void);
+
+/**
+ * @brief Get the underlying esp_http_server instance (port 80)
+ *
+ * Fork-local extension: lets sibling modules (examples/pc_control) register
+ * additional URI handlers on the same server instance instead of starting a
+ * second HTTP server. Returns NULL before the server has been started (or
+ * when the config httpd is compiled out). Cast to httpd_handle_t at the
+ * call site (struct httpd_data * == httpd_handle_t).
+ */
+struct httpd_data *ml_config_httpd_get_handle(ml_config_ctx_t *ctx);
 
 /**
  * @brief Start the HTTP server
@@ -236,6 +252,7 @@ typedef struct __attribute__((packed)) {
 #endif
 
 static inline ml_config_ctx_t *ml_config_httpd_init(void) { return NULL; }
+static inline struct httpd_data *ml_config_httpd_get_handle(ml_config_ctx_t *ctx) { (void)ctx; return NULL; }
 static inline int ml_config_httpd_start(ml_config_ctx_t *ctx, void *ml) { (void)ctx; (void)ml; return 0; }
 static inline void ml_config_httpd_stop(ml_config_ctx_t *ctx) { (void)ctx; }
 static inline void ml_config_httpd_deinit(ml_config_ctx_t *ctx) { (void)ctx; }
