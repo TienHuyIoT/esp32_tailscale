@@ -57,7 +57,8 @@ netsh advfirewall firewall add rule name="pc_agent tailnet" dir=in ^
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `bind_host` | `"auto"` | `auto` = the host's Tailscale IPv4; falls back to 127.0.0.1. Or set an explicit address. |
+| `bind_host` | `"auto"` | `auto` = the host's Tailscale IPv4; polls for it for up to `bind_wait_s` at start-up, then falls back to 127.0.0.1. Or set an explicit address. |
+| `bind_wait_s` | `120` | With `bind_host: "auto"`: seconds to keep waiting for the Tailscale IPv4 at start-up (logon can race Tailscale's own start-up; 0 = old immediate-fallback behavior). |
 | `port` | `8765` | TCP port. |
 | `token` | `""` | Bearer token required on every request. |
 | `dry_run` | `true` | Simulate shutdown/restart; never touch `shutdown.exe`. |
@@ -263,10 +264,13 @@ What it creates:
   windowless launcher (`pyw -3` / `pythonw`) running
   `pc_agent.py --config "<repo>\tools\pc_agent\config.json"`, working
   directory `tools\pc_agent` so a relative `log_file` still lands next
-  to the scripts. The delay lets Tailscale come up first, because
-  `bind_host: "auto"` is resolved once at agent start - binding too
-  early would silently fall back to `127.0.0.1` (see "Automatic start"
-  above).
+  to the scripts. If the logon still races Tailscale's own start-up,
+  `bind_host: "auto"` keeps polling for the Tailscale IPv4 for up to
+  `bind_wait_s` (default 120 s) before falling back to `127.0.0.1`. A
+  single-instance lock (`pc_agent.lock`, next to the config) makes this
+  task and the manager's own start path harmless when both fire: the
+  second agent logs "another pc_agent instance is already running" and
+  exits instead of double-binding the port.
 
 Notes:
 
@@ -276,11 +280,11 @@ Notes:
   needs this run once per user.
 - It never touches `dry_run` / `allow_real_execution` - starting the
   process does not arm real execution.
-- Test without a reboot: stop the agent first if the manager shows it
-  running (the task cannot detect an agent started outside it), then
-  `schtasks /Run /TN "MicroLink PC Agent"`; confirm `pc_agent.log`
-  shows the bind line for the Tailscale IP. The full check is a log
-  off / log on.
+- Test without a reboot: `schtasks /Run /TN "MicroLink PC Agent"` -
+  with the single-instance lock a duplicate simply exits (check for the
+  "already running" line in `pc_agent.log`); stop the current agent
+  first to see a fresh bind line for the Tailscale IP. The full check
+  is a log off / log on.
 - Inspect any time with `install_autostart.cmd /status`; remove with
   `install_autostart.cmd /uninstall` (or delete the shortcut / task in
   the Windows UIs).

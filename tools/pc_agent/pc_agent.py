@@ -34,15 +34,27 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.1.0"
+try:
+    import msvcrt
+except ImportError:  # non-Windows dev box - the instance lock is skipped
+    msvcrt = None
+
+VERSION = "0.1.1"
 MAX_BODY = 8 * 1024
 DEFAULT_DELAY_S = 60
 MIN_DELAY_S = 5
 MAX_DELAY_S = 3600
+# bind_host "auto": how long to poll for the Tailscale IPv4 before falling
+# back to 127.0.0.1 (a logon can race Tailscale's own start-up).
+BIND_WAIT_DEFAULT_S = 120
+BIND_RETRY_INTERVAL_S = 5
+# Single-instance lock file, created next to the config file.
+INSTANCE_LOCK_NAME = "pc_agent.lock"
 # Console children of a windowless (pythonw) process would each get a
 # fresh visible console window - hide them all.
 CREATE_NO_WINDOW = 0x08000000
@@ -54,6 +66,7 @@ def load_config(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         cfg = json.load(f)
     cfg.setdefault("bind_host", "auto")   # "auto" = Tailscale IPv4, else 127.0.0.1
+    cfg.setdefault("bind_wait_s", BIND_WAIT_DEFAULT_S)  # tailnet wait at start
     cfg.setdefault("port", 8765)
     cfg.setdefault("token", "")
     cfg.setdefault("dry_run", True)               # hard default ON
@@ -83,15 +96,71 @@ def tailscale_ipv4():
 
 
 def resolve_bind_host(cfg: dict) -> str:
+    """Resolve "auto" to the Tailscale IPv4, retrying at start-up.
+
+    At logon the agent can start before Tailscale has finished bringing
+    its interface up; falling back to 127.0.0.1 immediately would strand
+    the agent off the tailnet (the ESP32 then shows "svc: offline" until
+    a manual restart). Poll for up to bind_wait_s seconds instead.
+    """
     host = str(cfg.get("bind_host", "auto"))
     if host != "auto":
         return host
-    ts_ip = tailscale_ipv4()
-    if ts_ip:
-        log.info("bind host auto-detected from Tailscale: %s", ts_ip)
-        return ts_ip
-    log.warning("Tailscale IP not found - binding to 127.0.0.1 only")
+    try:
+        wait_s = max(0, int(cfg.get("bind_wait_s", BIND_WAIT_DEFAULT_S)))
+    except (TypeError, ValueError):
+        wait_s = BIND_WAIT_DEFAULT_S
+    deadline = time.monotonic() + wait_s
+    attempt = 0
+    while True:
+        attempt += 1
+        ts_ip = tailscale_ipv4()
+        if ts_ip:
+            log.info("bind host auto-detected from Tailscale: %s (attempt %d)",
+                     ts_ip, attempt)
+            return ts_ip
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        log.info("Tailscale IP not ready yet (attempt %d) - retrying in %.0fs",
+                 attempt, min(BIND_RETRY_INTERVAL_S, remaining))
+        time.sleep(min(BIND_RETRY_INTERVAL_S, remaining))
+    log.warning("Tailscale IP not found after %ds - binding to 127.0.0.1 only",
+                wait_s)
     return "127.0.0.1"
+
+
+def port_in_use(host: str, port: int) -> bool:
+    """True when something already accepts connections on host:port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex((host, port)) == 0
+
+
+def acquire_instance_lock(path: str):
+    """Take the single-instance lock file for this process's lifetime.
+
+    Returns an open file object on success (keep it referenced!), True
+    when the platform has no msvcrt (lock skipped), or None when another
+    instance already holds the lock. The OS releases the lock when the
+    process exits, so a crash never leaves it stuck."""
+    if msvcrt is None:  # non-Windows dev box
+        return True
+    try:
+        handle = open(path, "a+")
+    except OSError:
+        return True  # cannot create the lock file - keep permissive
+    try:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        handle.close()
+        return None
+    handle.seek(0)
+    handle.truncate()
+    handle.write("%d\n" % os.getpid())
+    handle.flush()
+    return handle
 
 
 class Pending:
@@ -423,6 +492,15 @@ def self_test(cfg) -> int:
     check("subprocess runner failure path", (not ok) and ("exit code 1" in detail))
     ok, _ = run_command(["definitely-not-a-real-command-xyz"])
     check("subprocess runner OSError path", not ok)
+    if msvcrt is not None:
+        lock_path = os.path.join(tempfile.gettempdir(), "pc_agent_selftest.lock")
+        holder = acquire_instance_lock(lock_path)
+        rival = acquire_instance_lock(lock_path)
+        check("instance lock blocks a second holder",
+              holder is not None and rival is None)
+        for handle in (holder, rival):
+            if hasattr(handle, "close"):
+                handle.close()
     print(f"self-test complete: {failures} failure(s)")
     return 1 if failures else 0
 
@@ -458,8 +536,25 @@ def main() -> int:
         fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         logging.getLogger().addHandler(fh)
 
+    # One agent per machine: a duplicate start (e.g. the logon Task
+    # Scheduler task racing the manager's own start path) must exit
+    # instead of double-binding the port.
+    lock_path = os.path.join(os.path.dirname(os.path.abspath(args.config)),
+                             INSTANCE_LOCK_NAME)
+    instance_lock = acquire_instance_lock(lock_path)  # held until exit
+    if instance_lock is None:
+        log.warning("another pc_agent instance is already running "
+                    "(lock %s held) - exiting", lock_path)
+        return 0  # benign: the other instance is serving
+
     host = resolve_bind_host(cfg)
     port = int(cfg.get("port", 8765))
+    for probe_host in dict.fromkeys((host, "127.0.0.1")):
+        if port_in_use(probe_host, port):
+            log.warning("port %d on %s already accepts connections - "
+                        "another instance is probably running; exiting",
+                        port, probe_host)
+            return 3
     effective_dry = bool(cfg.get("dry_run")
                          or not cfg.get("allow_real_execution"))
     srv = AgentServer((host, port), cfg)

@@ -34,6 +34,7 @@ docs/PPP_ANALYSIS.md
 # Windows PC agent (config.json holds the bearer token)
 tools/pc_agent/config.json
 tools/pc_agent/pc_agent.pid
+tools/pc_agent/pc_agent.lock
 
 # Scratch test payloads (created ad hoc while curl-testing the agent)
 tools/pc_agent/t_*.json

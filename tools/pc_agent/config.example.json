@@ -1,5 +1,6 @@
 {
   "bind_host": "auto",
+  "bind_wait_s": 120,
   "port": 8765,
   "token": "PUT-A-STRONG-TOKEN-HERE",
   "dry_run": true,
