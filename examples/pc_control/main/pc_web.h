@@ -11,7 +11,10 @@
  *  - commands are disabled while another command is active;
  *  - PWR_RESET asks for confirmation; FORCE_POWER_OFF requires typing the
  *    command name (inline modal - no JS confirm/alert);
- *  - status polling backs off on failure and pauses while the tab is hidden.
+ *  - status polling backs off on failure and pauses while the tab is hidden;
+ *  - the USB HID login panel is explicit-submit only, clears the password
+ *    field immediately, never persists it, and reports only that keystrokes
+ *    were sent (it cannot know whether Windows accepted them).
  */
 
 #pragma once
@@ -98,6 +101,18 @@ footer{margin:22px 0 8px;font-size:.72em;color:#484f58;text-align:center;line-he
  <div class="grid" id="cmdGrid"></div>
  <p class="hint" id="modeHint"></p>
  <p class="hint" id="cdHint"></p>
+ <h2>USB HID login</h2>
+ <div class="card">
+  <div class="d" id="hidState">HID: loading...</div>
+  <div class="row" style="margin-top:8px;justify-content:flex-start">
+   <input class="txt" id="hidPw" type="password" autocomplete="new-password" spellcheck="false" placeholder="Windows password (RAM only, never stored)" style="max-width:420px" disabled>
+   <button class="btn" id="hidGo" disabled>Type password</button>
+   <button class="btn ghost" id="hidCancel" disabled>Cancel</button>
+  </div>
+  <label class="hint" style="display:flex;gap:8px;align-items:center;margin-top:6px;cursor:pointer"><input type="checkbox" id="hidEnter" checked> Press Enter after typing</label>
+  <div class="hint" id="hidMsg" style="min-height:1em"></div>
+  <div class="hint">Types through the ESP32 USB keyboard port into whichever window has focus on the PC. This reports that keystrokes were sent - it cannot know whether Windows accepted the password (screen state, keyboard layout and other factors are invisible from here).</div>
+ </div>
  <h2>Log</h2>
  <ul id="logList"></ul>
  <footer>MicroLink PC Control &middot; MOCK mode performs no physical action and no real Windows operation.<br>
@@ -272,6 +287,8 @@ function render(s){
     ? ('Hardware cooldown: ' + Math.ceil(cdms / 1000) + ' s remaining - hardware buttons unlock automatically.')
     : '';
 
+  renderHid(s.hid || {});
+
   CMDS.forEach(function(c){
     const b = $('btn-' + c.id);
     if (!b) return;
@@ -373,6 +390,62 @@ async function doCancel(){
   }
   refresh();
 }
+function renderHid(h){
+  h = h || {};
+  const en = !!h.enabled, mo = !!h.mounted;
+  const busyH = (h.state === 'queued' || h.state === 'typing');
+  let d;
+  if (!en) d = 'USB HID login: disabled in this firmware build.';
+  else if (!mo) d = 'USB HID login: NOT connected - plug the ESP32 native USB port into the target PC.';
+  else d = 'USB HID login: ready on the native USB port.';
+  d += '  state: ' + (h.state || 'idle');
+  if (h.last_error) d += '  -  last error: ' + h.last_error;
+  $('hidState').textContent = d;
+  const canType = en && mo && !busyH && !busy;
+  $('hidPw').disabled = !canType;
+  $('hidGo').disabled = !canType;
+  $('hidCancel').disabled = (h.state !== 'queued');
+}
+async function hidSubmit(){
+  if (busy) return;
+  const pw = $('hidPw');
+  if (!pw.value) { $('hidMsg').textContent = 'Password is empty.'; return; }
+  const payload = { password: pw.value, press_enter: $('hidEnter').checked };
+  pw.value = '';
+  busy = true;
+  if (st) render(st);
+  $('hidMsg').textContent = 'Submitting...';
+  const r = await fetchJson('/api/v1/hid/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  payload.password = '';
+  const j = r.json || {};
+  if (r.status === 202) {
+    $('hidMsg').textContent = 'Queued - typing starts shortly; Cancel works until the first keystroke.';
+    log('HID login typing queued');
+  } else if (r.status === 401) {
+    $('hidMsg').textContent = 'Rejected: API token missing or invalid.';
+    openTok();
+  } else if (j.error === 'unsupported_char') {
+    $('hidMsg').textContent = 'Unsupported character at position ' + j.position + ' - printable ASCII only.';
+  } else {
+    var m = 'Rejected (' + r.status + '): ' + (j.error || r.error || '?');
+    if (j.detail) m += ' - ' + j.detail;
+    if (j.max_len) m += '  (max ' + j.max_len + ' characters)';
+    $('hidMsg').textContent = m;
+  }
+  busy = false;
+  refresh();
+}
+async function hidCancel(){
+  const r = await fetchJson('/api/v1/hid/cancel', { method: 'POST' });
+  const j = r.json || {};
+  if (j.cancelled) { $('hidMsg').textContent = 'Cancelled before typing started.'; log('HID login typing cancelled'); }
+  else $('hidMsg').textContent = 'Not cancelled (' + r.status + '): ' + (j.detail || j.error || '?') + (j.state ? '  [state: ' + j.state + ']' : '');
+  refresh();
+}
 async function refresh(){
   if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
   try {
@@ -399,7 +472,8 @@ function schedule(){
    * every second: the buttons must unlock exactly when the firmware would
    * accept them again (at the normal cadence a finished 0.5 s pulse felt
    * like a 10 s lockout). */
-  const busyNow = !!(st && (st.active_command || (st.hw_cooldown_ms > 0)));
+  const busyNow = !!(st && (st.active_command || (st.hw_cooldown_ms > 0) ||
+                            (st.hid && (st.hid.state === 'queued' || st.hid.state === 'typing'))));
   if (!document.hidden && busyNow && fails === 0) delay = 1000;
   pollTimer = setTimeout(refresh, delay);
 }
@@ -446,6 +520,8 @@ function applyHashToken(){
 }
 applyHashToken();
 window.addEventListener('hashchange', function(){ if (applyHashToken()) refresh(); });
+$('hidGo').addEventListener('click', hidSubmit);
+$('hidCancel').addEventListener('click', hidCancel);
 $('btnCancel').addEventListener('click', doCancel);
 buildButtons();
 refresh();

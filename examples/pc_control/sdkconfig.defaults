@@ -75,3 +75,14 @@ CONFIG_PCCTL_WIN_HOST=""
 CONFIG_PCCTL_WIN_PORT=8765
 # Agent status poll cadence (seconds)
 CONFIG_PCCTL_POLL_INTERVAL_S=10
+# ---------------------------------------------------------------------------
+# USB HID login (PC Control): TinyUSB keyboard on the native USB port.
+# The USB-Serial-JTAG controller shares the same pins (GPIO19/20), so it is
+# disabled together with its secondary console; the serial console, flashing
+# and debugging stay on UART0 (external USB-UART bridge - COM9).
+# ---------------------------------------------------------------------------
+CONFIG_TINYUSB_HID_COUNT=1
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+CONFIG_USJ_ENABLE_USB_SERIAL_JTAG=n
+# Enable the /pc "USB HID login" panel (token-gated, RAM-only password).
+CONFIG_PCCTL_ENABLE_HID=y

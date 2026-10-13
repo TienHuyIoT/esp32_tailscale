@@ -477,3 +477,66 @@ Notes:
 
 
 
+
+## USB HID login (native USB port)
+
+The ESP32-S3 can act as a USB keyboard and type the Windows password into
+the focused window (typically the login screen). The password is always
+entered explicitly per request and is never stored.
+
+Flow: browser (/pc, "USB HID login" panel) -> Tailscale/WireGuard -> ESP32
+HTTP API (POST /api/v1/hid/login, token-gated like every mutation) -> RAM
+buffer -> TinyUSB HID keyboard (native USB port, GPIO19/20) -> focused
+window on the PC.
+
+### Security properties
+
+- The password lives only in a small RAM buffer (max PCCTL_HID_MAX_LEN,
+  default 64 chars). It is zeroized right after typing, cancellation or
+  error; the HTTP request body and the parsed JSON copy are wiped
+  immediately after the hand-off to the HID module.
+- Never written to NVS, files or backups; never logged; never echoed in
+  any response (validation failures report only the 0-based position of an
+  unsupported character); never put in a URL.
+- The browser field is type=password with autocomplete=new-password,
+  cleared immediately on submit and never persisted (no localStorage).
+- POST /api/v1/hid/login and POST /api/v1/hid/cancel require the same
+  X-PC-Token / Authorization: Bearer as every other mutation.
+- A submission first sits in an ARM window (PCCTL_HID_ARM_DELAY_MS,
+  default 1000 ms) during which it can be cancelled; typing then takes
+  len * 2 * PCCTL_HID_KEY_DELAY_MS (default 30 ms) ms. Concurrent
+  submissions are rejected with 409 while one is queued or typing.
+- The API reports only that keystrokes were sent - it cannot know whether
+  Windows accepted the password (screen state, keyboard layout and other
+  authentication factors are not observable from here).
+
+### API
+
+    GET  /api/v1/status   -> "hid": {enabled, mounted, state, busy, max_len,
+                             state_age_s, last_error}
+                             state: idle|queued|typing|done|cancelled|error
+    POST /api/v1/hid/login   {"password": "...", "press_enter": true}
+         202 {"ok":true,"state":"queued"}
+         400 unsupported_char | too_long | invalid_json | invalid_body
+         401 missing_token | invalid_token
+         403 hid_disabled    (feature compiled out)
+         409 busy            (another job queued or typing)
+         503 not_mounted     (native USB port not enumerated by a host)
+    POST /api/v1/hid/cancel  (cancels inside the ARM window only)
+         200 {"cancelled":true} / 409 {"cancelled":false,state:...}
+
+### Build / hardware notes
+
+- Feature gate: CONFIG_PCCTL_ENABLE_HID=y plus CONFIG_TINYUSB_HID_COUNT=1
+  (managed component espressif/esp_tinyusb, see main/idf_component.yml).
+- TinyUSB and the USB-Serial-JTAG console share GPIO19/20, so the USJ
+  driver and its secondary console are disabled (sdkconfig.defaults). The
+  UART console, flashing and debugging are unchanged on COM9 (external
+  USB-UART bridge); the native USB port enumerates as a HID keyboard
+  (VID 303A, serial string "pcctl-hid") instead of a serial port.
+- Typing uses US-layout HID keycodes; Windows maps them through the
+  keyboard layout active at that moment - like a physical keyboard, a
+  non-US layout at the login screen produces different symbols ("@" and
+  "\" swap on en-GB, etc.).
+- At the secure desktop (Ctrl+Alt+Del prompt) a plain keyboard cannot send
+  the SAS; keystrokes only reach the password box once it is shown.

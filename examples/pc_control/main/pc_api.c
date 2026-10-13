@@ -10,6 +10,9 @@
  *   POST /api/v1/commands             submit command (token required)
  *   GET  /api/v1/commands/{id}        command state
  *   POST /api/v1/commands/{id}/cancel cancel (token required)
+ *   POST /api/v1/hid/login            type the password over USB HID
+ *                                     (token required; RAM-only)
+ *   POST /api/v1/hid/cancel           cancel the pre-typing ARM window
  *
  * Mutations require X-PC-Token (or Authorization: Bearer) to match
  * CONFIG_PCCTL_API_TOKEN. Plain HTTP is acceptable only because traffic
@@ -24,6 +27,7 @@
 #include "pc_win_client.h"
 #include "pc_state.h"
 #include "pc_cmd.h"
+#include "pc_hid.h"
 #include "ml_config_httpd.h"
 #include "microlink_internal.h"
 #include "esp_http_server.h"
@@ -285,6 +289,17 @@ static esp_err_t handler_status(httpd_req_t *req) {
 #else
     cJSON_AddBoolToObject(auth, "mutations_allowed", configured);
 #endif
+
+    /* USB HID login readiness for the /pc HID panel. No secrets here. */
+    cJSON *hid = cJSON_AddObjectToObject(json, "hid");
+    cJSON_AddBoolToObject(hid, "enabled", pc_hid_enabled());
+    cJSON_AddBoolToObject(hid, "mounted", pc_hid_mounted());
+    cJSON_AddStringToObject(hid, "state", pc_hid_state_str(pc_hid_get_state()));
+    cJSON_AddBoolToObject(hid, "busy", pc_hid_busy());
+    cJSON_AddNumberToObject(hid, "max_len", (double)pc_hid_max_len());
+    cJSON_AddNumberToObject(hid, "state_age_s", pc_hid_state_age_s());
+    const char *hid_err = pc_hid_last_error();
+    if (hid_err && hid_err[0]) cJSON_AddStringToObject(hid, "last_error", hid_err);
 
     return send_json_status(req, NULL, json);
 }
@@ -879,6 +894,109 @@ static esp_err_t handler_ui(httpd_req_t *req) {
     return httpd_resp_sendstr(req, PCCTL_PAGE_HTML);
 }
 
+/* ---------- POST /api/v1/hid/login + /api/v1/hid/cancel ---------- */
+
+static esp_err_t handler_post_hid_login(httpd_req_t *req) {
+    const char *status = NULL, *error = NULL;
+    if (!authorize_mutation(req, &status, &error)) {
+        return send_error(req, status, error, "send X-PC-Token or Authorization: Bearer");
+    }
+    if (req->content_len > MAX_BODY_LEN) {
+        return send_error(req, "413 Payload Too Large", "body_too_large", NULL);
+    }
+    if (!content_type_is_json(req)) {
+        return send_error(req, "415 Unsupported Media Type", "content_type_required",
+                          "use Content-Type: application/json");
+    }
+    char *body = read_body(req);
+    if (!body) return send_error(req, "400 Bad Request", "invalid_body", NULL);
+    cJSON *json = cJSON_Parse(body);
+    if (!json) {
+        pc_hid_wipe(body, strlen(body));
+        free(body);
+        return send_error(req, "400 Bad Request", "invalid_json", NULL);
+    }
+
+    cJSON *pw_item = cJSON_GetObjectItem(json, "password");
+    cJSON *enter_item = cJSON_GetObjectItem(json, "press_enter");
+    bool press_enter = !enter_item || cJSON_IsTrue(enter_item);
+    size_t bad_index = 0;
+    pc_hid_submit_result_t st = PC_HID_SUBMIT_BAD_CHAR;
+    if (pw_item && cJSON_IsString(pw_item)) {
+        st = pc_hid_submit(pw_item->valuestring, press_enter, &bad_index);
+        /* wipe the parsed copy immediately - pc_hid owns its own buffer */
+        pc_hid_wipe(pw_item->valuestring, strlen(pw_item->valuestring));
+    }
+    pc_hid_wipe(body, strlen(body));
+    free(body);
+    cJSON_Delete(json);
+
+    switch (st) {
+    case PC_HID_SUBMIT_OK: {
+        cJSON *resp = cJSON_CreateObject();
+        if (!resp) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+        cJSON_AddBoolToObject(resp, "ok", true);
+        cJSON_AddStringToObject(resp, "state", "queued");
+        return send_json_status(req, "202 Accepted", resp);
+    }
+    case PC_HID_SUBMIT_BUSY:
+        return send_error(req, "409 Conflict", "busy",
+                          "a HID job is already queued or typing");
+    case PC_HID_SUBMIT_NOT_MOUNTED:
+        return send_error(req, "503 Service Unavailable", "not_mounted",
+                          "the native USB port is not enumerated by a host");
+    case PC_HID_SUBMIT_DISABLED:
+        return send_error(req, "403 Forbidden", "hid_disabled",
+                          "enable CONFIG_PCCTL_ENABLE_HID and rebuild");
+    case PC_HID_SUBMIT_TOO_LONG: {
+        cJSON *resp = cJSON_CreateObject();
+        if (!resp) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+        cJSON_AddBoolToObject(resp, "ok", false);
+        cJSON_AddStringToObject(resp, "error", "too_long");
+        cJSON_AddNumberToObject(resp, "max_len", (double)pc_hid_max_len());
+        return send_json_status(req, "400 Bad Request", resp);
+    }
+    default: {
+        cJSON *resp = cJSON_CreateObject();
+        if (!resp) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+        cJSON_AddBoolToObject(resp, "ok", false);
+        cJSON_AddStringToObject(resp, "error", "unsupported_char");
+        cJSON_AddNumberToObject(resp, "position", (double)bad_index);
+        cJSON_AddStringToObject(resp, "detail",
+                                "printable ASCII only - the character itself is never echoed");
+        return send_json_status(req, "400 Bad Request", resp);
+    }
+    }
+}
+
+static esp_err_t handler_post_hid_cancel(httpd_req_t *req) {
+    const char *status = NULL, *error = NULL;
+    if (!authorize_mutation(req, &status, &error)) {
+        return send_error(req, status, error, "send X-PC-Token or Authorization: Bearer");
+    }
+    esp_err_t err = pc_hid_cancel();
+    if (err == ESP_OK) {
+        cJSON *resp = cJSON_CreateObject();
+        if (!resp) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+        cJSON_AddBoolToObject(resp, "ok", true);
+        cJSON_AddBoolToObject(resp, "cancelled", true);
+        return send_json_status(req, NULL, resp);
+    }
+    if (err == ESP_ERR_NOT_SUPPORTED) {
+        return send_error(req, "403 Forbidden", "hid_disabled",
+                          "enable CONFIG_PCCTL_ENABLE_HID and rebuild");
+    }
+    {
+        cJSON *resp = cJSON_CreateObject();
+        if (!resp) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+        cJSON_AddBoolToObject(resp, "ok", true);
+        cJSON_AddBoolToObject(resp, "cancelled", false);
+        cJSON_AddStringToObject(resp, "state", pc_hid_state_str(pc_hid_get_state()));
+        cJSON_AddStringToObject(resp, "detail", "nothing cancellable is pending");
+        return send_json_status(req, "409 Conflict", resp);
+    }
+}
+
 /* ---------- registration ---------- */
 
 esp_err_t pc_api_start(microlink_t *ml) {
@@ -904,6 +1022,8 @@ esp_err_t pc_api_start(microlink_t *ml) {
         { .uri = "/api/v1/config",       .method = HTTP_POST, .handler = handler_post_config,       .user_ctx = ml },
         { .uri = "/api/v1/config/token", .method = HTTP_POST, .handler = handler_post_config_token, .user_ctx = ml },
         { .uri = "/api/v1/config/test",  .method = HTTP_POST, .handler = handler_post_config_test,  .user_ctx = ml },
+        { .uri = "/api/v1/hid/login",    .method = HTTP_POST, .handler = handler_post_hid_login,    .user_ctx = ml },
+        { .uri = "/api/v1/hid/cancel",   .method = HTTP_POST, .handler = handler_post_hid_cancel,   .user_ctx = ml },
     };
 
     int registered = 0;

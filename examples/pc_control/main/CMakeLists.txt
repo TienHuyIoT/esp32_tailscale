@@ -8,13 +8,16 @@ idf_component_register(
          "pc_win_client.c"
          "pc_controller.c"
          "pc_api.c"
+         "pc_hid.c"
     INCLUDE_DIRS "."
     REQUIRES microlink nvs_flash esp_wifi esp_netif esp_event
-             esp_http_server espressif__cjson esp_timer
+             esp_http_server espressif__cjson esp_timer espressif__esp_tinyusb
     # esp_driver_gpio is only used by pc_hw_gpio.c when
     # CONFIG_PCCTL_ENABLE_HW_GPIO=y. REQUIRES cannot be conditioned on
     # CONFIG_* values (requirements expand before Kconfig is available --
     # same rule documented in components/microlink/CMakeLists.txt), so the
     # dependency stays unconditional and the feature is gated in the .c file.
+    # Same rule for espressif__esp_tinyusb (pc_hid.c, gated by
+    # CONFIG_PCCTL_ENABLE_HID).
     PRIV_REQUIRES esp_driver_gpio
 )

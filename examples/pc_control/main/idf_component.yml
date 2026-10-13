@@ -1,0 +1,6 @@
+## IDF Component Manager Manifest File
+## USB HID keyboard login (pc_hid.c) uses Espressif's TinyUSB glue.
+## Version floor mirrors the tusb_hid example shipped with ESP-IDF v6.1.
+dependencies:
+  espressif/esp_tinyusb:
+    version: "^2.0.1~1"

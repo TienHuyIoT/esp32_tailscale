@@ -169,3 +169,15 @@ curl.exe -s -w '|%{http_code}' -X POST -H "X-PC-Token: <token>" `
   gitignored) and in the browser's localStorage for the UI.
 - See `docs/PC_CONTROLLER.md` for the full model, and
   `tools/pc_agent/README.md` for the Windows-side firewall/token setup.
+
+## USB HID login
+
+/pc includes a "USB HID login" panel: it types the Windows password
+through the ESP32-S3 native USB port (USB keyboard) into the focused
+window of the PC it is plugged into. RAM-only, token-gated, cancellable
+inside the ARM window, and it never claims that Windows accepted the
+password - only that keystrokes were sent. See docs/PC_CONTROLLER.md
+("USB HID login") for the full API contract, security properties, the
+US keyboard-layout caveat and the COM9/console notes. Build with
+CONFIG_PCCTL_ENABLE_HID=y (+ CONFIG_TINYUSB_HID_COUNT=1; USB-Serial-JTAG
+disabled - see sdkconfig.defaults).

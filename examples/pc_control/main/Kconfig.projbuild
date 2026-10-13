@@ -131,4 +131,41 @@ menu "Example Configuration"
 
     endmenu
 
+    menu "PC Control - USB HID login"
+
+        config PCCTL_ENABLE_HID
+            bool "Enable USB HID keyboard login (native USB port)"
+            default n
+            help
+                Compiles in the USB HID login module (pc_hid.c): on explicit
+                request from the /pc UI the ESP32-S3 native USB port types
+                the Windows password like a physical USB keyboard.
+
+                Requires TinyUSB (CONFIG_TINYUSB_HID_COUNT=1) and the
+                USB-Serial-JTAG console/driver to be disabled - the two
+                controllers share the same pins (GPIO19/20). The serial
+                console, flashing and debugging stay on the UART bridge
+                (COM9). The password is RAM-only, zeroized after use and
+                gated by the API token like every other mutation.
+
+        config PCCTL_HID_MAX_LEN
+            int "Maximum accepted password length (characters)"
+            default 64
+            range 8 127
+
+        config PCCTL_HID_ARM_DELAY_MS
+            int "Cancel window before typing starts (ms)"
+            default 1000
+            range 0 10000
+            help
+                After a submission the job stays cancellable for this long
+                before the first keystroke goes out. 0 = type immediately.
+
+        config PCCTL_HID_KEY_DELAY_MS
+            int "Per-keystroke pacing (ms, key-down to key-up)"
+            default 30
+            range 10 200
+
+    endmenu
+
 endmenu
