@@ -34,7 +34,8 @@ examples/pc_control/
     pc_auth.[ch]        admin login (salted SHA-256) + runtime API token
     pc_controller.[ch]  pc_ctl task: queue, dedup, cooldown, timeouts
     pc_api.[ch]         /pc + /api/v1/* handlers (shared port-80 server)
-    pc_web.h            embedded control + settings pages (vanilla JS)
+    pc_web.h            embedded ISUI control + settings pages (vanilla JS)
+    pc_ui_theme.h       shared ISUI theme (dark-glass CSS + UI helpers)
     pc_security_web.h   embedded login + API-token page
     Kconfig.projbuild   example options (token, timings, HID)
 ```

@@ -37,6 +37,7 @@
 #include "pc_api.h"
 #include "pc_web.h"
 #include "pc_security_web.h"
+#include "pc_ui_theme.h"
 #include "pc_controller.h"
 #include "pc_config.h"
 #include "pc_auth.h"
@@ -91,6 +92,32 @@ static esp_err_t send_error(httpd_req_t *req, const char *status,
     cJSON_AddStringToObject(json, "error", error);
     if (detail) cJSON_AddStringToObject(json, "detail", detail);
     return send_json_status(req, status, json);
+}
+
+/* ---------- embedded ISUI pages ---------- */
+
+/* Serve one embedded UI page: doctype + shared ISUI theme CSS (pc_ui_theme.h)
+ * + the page's own markup, then the shared helper script + the page script.
+ * Streamed with the chunked responder so the three pages share one theme
+ * without duplicating it inside every string literal. */
+static esp_err_t send_ui_page(httpd_req_t *req, const char *title,
+                              const char *markup, const char *script) {
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_sendstr_chunk(req, "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<meta name=\"color-scheme\" content=\"dark\">");
+    httpd_resp_sendstr_chunk(req, title);
+    httpd_resp_sendstr_chunk(req, "<style>");
+    httpd_resp_sendstr_chunk(req, PCCTL_UI_CSS);
+    httpd_resp_sendstr_chunk(req, "</style></head>");
+    httpd_resp_sendstr_chunk(req, markup);
+    httpd_resp_sendstr_chunk(req, "<script>");
+    httpd_resp_sendstr_chunk(req, PCCTL_UI_JS);
+    httpd_resp_sendstr_chunk(req, "</script><script>");
+    httpd_resp_sendstr_chunk(req, script);
+    httpd_resp_sendstr_chunk(req, "</script></body></html>");
+    return httpd_resp_sendstr_chunk(req, NULL);
 }
 
 /* ---------- request helpers ---------- */
@@ -604,9 +631,8 @@ static esp_err_t handler_get_config(httpd_req_t *req) {
 }
 
 static esp_err_t handler_settings_ui(httpd_req_t *req) {
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    return httpd_resp_sendstr(req, PCCTL_SETTINGS_HTML);
+    return send_ui_page(req, "<title>Control Deck - Settings</title>",
+                        PCCTL_SETTINGS_MARKUP, PCCTL_SETTINGS_SCRIPT);
 }
 
 /* ---------- admin login + API-token management (/pc/security) ---------- */
@@ -619,9 +645,8 @@ static bool session_authorized(httpd_req_t *req) {
 }
 
 static esp_err_t handler_security_ui(httpd_req_t *req) {
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    return httpd_resp_sendstr(req, PCCTL_SECURITY_HTML);
+    return send_ui_page(req, "<title>Control Deck - Security</title>",
+                        PCCTL_SECURITY_MARKUP, PCCTL_SECURITY_SCRIPT);
 }
 
 static esp_err_t handler_auth_status(httpd_req_t *req) {
@@ -1215,9 +1240,8 @@ static esp_err_t handler_post_relays_config(httpd_req_t *req) {
 /* ---------- GET /pc ---------- */
 
 static esp_err_t handler_ui(httpd_req_t *req) {
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    return httpd_resp_sendstr(req, PCCTL_PAGE_HTML);
+    return send_ui_page(req, "<title>Control Deck - PC Control</title>",
+                        PCCTL_PAGE_MARKUP, PCCTL_PAGE_SCRIPT);
 }
 
 /* ---------- POST /api/v1/hid/login + /api/v1/hid/cancel ---------- */
