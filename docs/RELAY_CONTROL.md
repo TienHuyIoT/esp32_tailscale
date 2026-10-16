@@ -6,6 +6,15 @@
 **Persistence:** Existing NVS configuration mechanism  
 **Hardware:** Existing relay module, supporting AC/DC loads
 
+> **Status (implementation):** implemented in the firmware -
+> `examples/pc_control/main/pc_relay.[ch]` (Relay Manager, NVS namespace
+> `pc_ctl` / key `relays`, safe-start GPIO handling), API
+> `GET/POST /api/v1/relays` + `POST /api/v1/relays/config`, UI sections on
+> `/pc` (control) and `/pc/settings` (configuration). Runtime contract:
+> `docs/PC_CONTROLLER.md` ("Relay control"), usage:
+> `examples/pc_control/README.md`. The Windows Python service is gone and
+> no relay path depends on it.
+
 ## 1. Objective
 
 Add a configurable, extensible Relay Control feature to the existing ESP32-S3 PC Controller.

@@ -99,6 +99,10 @@ footer{margin:22px 0 8px;font-size:.72em;color:#484f58;text-align:center;line-he
  <h2>Commands</h2>
  <div class="grid" id="cmdGrid"></div>
  <p class="hint" id="cdHint"></p>
+ <h2>Relays</h2>
+ <div id="relayEmpty" class="card hidden"><div class="d">No relay channels configured - set the channel count in <a href="/pc/settings" style="color:#58a6ff">Settings</a>.</div></div>
+ <div class="cards" id="relayGrid"></div>
+ <p class="hint" id="relayHint">ON/OFF buttons send explicit relay commands and the page shows the commanded state - there is no contact feedback, so the physical load state is not sensed.</p>
  <h2>USB HID login</h2>
  <div class="card">
   <div class="d" id="hidState">HID: loading...</div>
@@ -252,6 +256,7 @@ function render(s){
     : '';
 
   renderHid(s.hid || {});
+  renderRelays((s.relays && s.relays.channels) || []);
 
   CMDS.forEach(function(c){
     const b = $('btn-' + c.id);
@@ -398,6 +403,91 @@ async function hidCancel(){
   else $('hidMsg').textContent = 'Not cancelled (' + r.status + '): ' + (j.detail || j.error || '?') + (j.state ? '  [state: ' + j.state + ']' : '');
   refresh();
 }
+let relaySig = '';
+const relayPending = {};
+function renderRelays(rels){
+  const grid = $('relayGrid');
+  const empty = $('relayEmpty');
+  rels = rels || [];
+  empty.classList.toggle('hidden', rels.length > 0);
+  grid.classList.toggle('hidden', rels.length === 0);
+  const sig = rels.map(function(c){
+    return [c.id, c.name, c.gpio, c.active_level, c.enabled].join(':');
+  }).join('|');
+  if (sig !== relaySig) {
+    relaySig = sig;
+    grid.innerHTML = '';
+    rels.forEach(function(c){
+      const t = document.createElement('div'); t.className = 'card';
+      const k = document.createElement('div'); k.className = 'k'; k.textContent = 'relay ' + (c.id + 1);
+      const v = document.createElement('div'); v.className = 'v'; v.id = 'rState-' + c.id;
+      const nm = document.createElement('div'); nm.className = 'd'; nm.id = 'rName-' + c.id;
+      const mt = document.createElement('div'); mt.className = 'd'; mt.id = 'rMeta-' + c.id;
+      const row = document.createElement('div'); row.className = 'row';
+      row.style.marginTop = '8px'; row.style.justifyContent = 'flex-start';
+      const bon = document.createElement('button'); bon.className = 'btn'; bon.id = 'rOn-' + c.id; bon.textContent = 'ON';
+      const boff = document.createElement('button'); boff.className = 'btn ghost'; boff.id = 'rOff-' + c.id; boff.textContent = 'OFF';
+      bon.addEventListener('click', function(){ relaySet(c.id, true); });
+      boff.addEventListener('click', function(){ relaySet(c.id, false); });
+      const msg = document.createElement('div'); msg.className = 'hint'; msg.id = 'rMsg-' + c.id; msg.style.minHeight = '1em';
+      row.appendChild(bon); row.appendChild(boff);
+      t.appendChild(k); t.appendChild(v); t.appendChild(nm); t.appendChild(mt); t.appendChild(row); t.appendChild(msg);
+      grid.appendChild(t);
+    });
+  }
+  rels.forEach(function(c){
+    const v = $('rState-' + c.id); if (!v) return;
+    v.textContent = (c.state === 'on') ? 'ON' : 'OFF';
+    v.className = 'v ' + (c.state === 'on' ? 'v-ok' : 'v-mid');
+    $('rName-' + c.id).textContent = c.name || ('Relay ' + (c.id + 1));
+    let meta = 'GPIO' + (c.gpio === null ? 'NC (not configured)' : c.gpio) +
+               ' - Active ' + (c.active_level === 'low' ? 'LOW' : 'HIGH');
+    if (!c.enabled) meta += ' - disabled in Settings';
+    else if (c.gpio === null) meta += ' - set a GPIO to allow commands';
+    $('rMeta-' + c.id).textContent = meta;
+    const inflight = !!relayPending[c.id];
+    const can = !!c.available && !inflight;
+    const bon = $('rOn-' + c.id), boff = $('rOff-' + c.id);
+    bon.disabled = !can || c.state === 'on';
+    boff.disabled = !can || c.state === 'off';
+    const why = inflight ? 'sending...' : (c.available ? '' : (c.unavailable_reason || 'unavailable'));
+    bon.title = why; boff.title = why;
+  });
+}
+async function relaySet(id, on){
+  if (relayPending[id]) return;
+  relayPending[id] = true;
+  if (st) render(st);
+  const m = $('rMsg-' + id);
+  if (m) m.textContent = 'Sending ' + (on ? 'ON' : 'OFF') + '...';
+  try {
+    const r = await fetchJson('/api/v1/relays', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel: id, state: on ? 'on' : 'off' })
+    });
+    const j = r.json || {};
+    if (r.status === 200 && j.ok) {
+      if (m) m.textContent = (on ? 'ON' : 'OFF') + ' commanded' +
+        (j.changed === false ? ' (was already ' + (on ? 'on' : 'off') + ')' : '') + '.';
+      log('relay ' + id + ' -> ' + (on ? 'ON' : 'OFF') + ' commanded');
+    } else if (r.status === 401) {
+      if (m) m.textContent = 'Rejected: API token missing or invalid.';
+      openTok();
+    } else {
+      let msg = 'Rejected (' + r.status + '): ' + (j.error || r.error || '?');
+      if (j.error === 'channel_disabled') msg = 'Rejected: channel disabled in Settings.';
+      else if (j.error === 'gpio_not_configured') msg = 'Rejected: no GPIO configured (NC).';
+      else if (j.error === 'unknown_channel') msg = 'Rejected: unknown channel.';
+      else if (j.detail) msg += ' - ' + j.detail;
+      if (m) m.textContent = msg;
+      log('relay ' + id + ' rejected: ' + (j.error || r.status));
+    }
+  } catch (e) {
+    if (m) m.textContent = 'Request failed: ' + e;
+  }
+  relayPending[id] = false;
+  refresh();
+}
 async function refresh(){
   if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
   try {
@@ -424,7 +514,8 @@ function schedule(){
    * every second: the buttons must unlock exactly when the firmware would
    * accept them again (at the normal cadence a finished 0.5 s pulse felt
    * like a 10 s lockout). */
-  const busyNow = !!(st && (st.active_command || (st.hw_cooldown_ms > 0) ||
+  const relayBusyNow = Object.keys(relayPending).length > 0;
+  const busyNow = relayBusyNow || !!(st && (st.active_command || (st.hw_cooldown_ms > 0) ||
                             (st.hid && (st.hid.state === 'queued' || st.hid.state === 'typing'))));
   if (!document.hidden && busyNow && fails === 0) delay = 1000;
   pollTimer = setTimeout(refresh, delay);
@@ -555,6 +646,17 @@ footer{margin:22px 0 8px;font-size:.72em;color:#484f58;text-align:center;line-he
   <button class="btn" id="saveAll">Save settings</button>
  </div>
  <p class="hint" id="saveMsg"></p>
+ <h2>Relay channels</h2>
+ <div class="card">
+  <div class="row">
+   <div class="frm" style="max-width:210px"><label>Channel count <span id="relayMax"></span></label><input class="txt" id="relayCount" type="number" min="0"></div>
+   <span class="hint" id="relayCountHint" style="margin:0"></span>
+  </div>
+  <div id="relayList"></div>
+  <div class="hint">Each channel needs its own board pin - it must not be shared with another relay channel or a PC-control function. Active level = the level driven to switch the relay ON (idle = the opposite). Saving, rebooting or losing power always leaves every relay OFF by design. Verify the relay module's trigger polarity and the AC/DC load rating and wiring before switching real loads; GPIO state is not contact feedback.</div>
+  <div class="row" style="margin-top:10px"><button class="btn" id="saveRelays">Save relay settings</button><span class="hint" id="relaySaveMsg" style="margin:0"></span></div>
+ </div>
+
  <h2>Device</h2>
  <div class="card">
   <div class="d">Restart the ESP32 firmware. WiFi, the Tailnet identity, the GPIO mapping, the login and the API token are all kept - this page stops responding for a few seconds.</div>
@@ -622,6 +724,119 @@ function applyHashToken(){
   log('Token applied from URL');
   return true;
 }
+function relayCfg(){ return (cfg && cfg.relays) || { channel_count: 0, max_channels: 0, channels: [] }; }
+function relayHighestConfigured(){
+  let h = -1;
+  relayCfg().channels.forEach(function(c){
+    if (c.enabled || (c.gpio !== null && c.gpio !== undefined)) h = Math.max(h, c.id);
+  });
+  return h;
+}
+function relayRowCount(n){
+  return Math.max(n, relayHighestConfigured() + 1);
+}
+function updateRelayHint(n){
+  const rc = relayCfg();
+  if (!rc.max_channels) { $('relayCountHint').textContent = 'relay support not reported by the firmware'; return; }
+  const extra = relayRowCount(n) - n;
+  $('relayCountHint').textContent = extra > 0
+    ? (extra + ' row(s) are above the count because they still have settings - clear their GPIO/enable, then reduce')
+    : ('0-' + rc.max_channels + ' channels');
+}
+function buildRelayRows(n){
+  const rc = relayCfg();
+  const list = $('relayList');
+  list.innerHTML = '';
+  for (let i = 0; i < n; i++) {
+    const c = rc.channels[i] || { id: i, name: '', enabled: false, gpio: null, active_level: 'high' };
+    const row = document.createElement('div'); row.className = 'frm';
+    const lbl = document.createElement('label');
+    lbl.textContent = 'Relay ' + (i + 1) + (i >= rc.channel_count ? '  (above the channel count)' : '');
+    const wrap = document.createElement('div'); wrap.className = 'row';
+    const name = document.createElement('input'); name.className = 'txt'; name.id = 'rn-' + i;
+    name.maxLength = 32; name.placeholder = 'name'; name.value = c.name || '';
+    name.style.flex = '1 1 140px';
+    const en = document.createElement('label'); en.className = 'chkrow';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 're-' + i; cb.checked = !!c.enabled;
+    const t = document.createElement('span'); t.textContent = 'enabled';
+    en.appendChild(cb); en.appendChild(t);
+    const sel = document.createElement('select'); sel.className = 'txt'; sel.id = 'rg-' + i;
+    sel.style.flex = '1 1 130px';
+    const none = document.createElement('option'); none.value = ''; none.textContent = 'NC (not configured)';
+    sel.appendChild(none);
+    cfg.allowed_gpios.forEach(function(p){
+      const o = document.createElement('option'); o.value = p; o.textContent = 'GPIO' + p; sel.appendChild(o);
+    });
+    sel.value = (c.gpio === null || c.gpio === undefined) ? '' : String(c.gpio);
+    const lvl = document.createElement('select'); lvl.className = 'txt'; lvl.id = 'rl-' + i;
+    lvl.style.flex = '0 1 120px'; lvl.title = 'level driven to switch the relay ON';
+    const oh = document.createElement('option'); oh.value = 'high'; oh.textContent = 'Active HIGH';
+    const ol = document.createElement('option'); ol.value = 'low';  ol.textContent = 'Active LOW';
+    lvl.appendChild(oh); lvl.appendChild(ol);
+    lvl.value = (c.active_level === 'low') ? 'low' : 'high';
+    const so = document.createElement('span'); so.className = 'd'; so.textContent = 'startup: OFF (safe)';
+    wrap.appendChild(name); wrap.appendChild(en); wrap.appendChild(sel); wrap.appendChild(lvl); wrap.appendChild(so);
+    row.appendChild(lbl); row.appendChild(wrap);
+    list.appendChild(row);
+  }
+}
+function renderRelaySection(){
+  const rc = relayCfg();
+  $('relayMax').textContent = '(0-' + (rc.max_channels || 0) + ')';
+  $('relayCount').max = rc.max_channels || 0;
+  $('relayCount').value = rc.channel_count;
+  buildRelayRows(relayRowCount(rc.channel_count));
+  updateRelayHint(rc.channel_count);
+}
+function onRelayCountChange(){
+  const rc = relayCfg();
+  let n = parseInt($('relayCount').value, 10);
+  if (isNaN(n) || n < 0) n = 0;
+  if (n > rc.max_channels) n = rc.max_channels;
+  $('relayCount').value = n;
+  buildRelayRows(relayRowCount(n));
+  updateRelayHint(n);
+}
+async function saveRelays(){
+  const rc = relayCfg();
+  let n = parseInt($('relayCount').value, 10);
+  if (isNaN(n) || n < 0 || n > rc.max_channels) {
+    $('relaySaveMsg').textContent = 'Channel count must be 0-' + rc.max_channels + '.';
+    return;
+  }
+  const rows = $('relayList').children.length;
+  const channels = [];
+  for (let i = 0; i < rows; i++) {
+    const gv = $('rg-' + i).value;
+    channels.push({
+      id: i,
+      name: $('rn-' + i).value,
+      enabled: $('re-' + i).checked,
+      gpio: (gv === '') ? null : parseInt(gv, 10),
+      active_level: $('rl-' + i).value,
+      startup_policy: 'off'
+    });
+  }
+  $('relaySaveMsg').textContent = 'Saving...';
+  const r = await fetchJson('/api/v1/relays/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel_count: n, channels: channels })
+  });
+  const j = r.json || {};
+  if (r.status === 200 && j.ok && j.relays) {
+    cfg.relays = j.relays;
+    renderRelaySection();
+    $('relaySaveMsg').textContent = 'Saved to NVS and applied - all relays were driven OFF (safe start).';
+    log('relay settings saved');
+  } else if (r.status === 401) {
+    $('relaySaveMsg').textContent = 'Rejected: API token missing or invalid - set it in the top card.';
+  } else if (r.status === 409 && j.error === 'unsafe_reduction') {
+    $('relaySaveMsg').textContent = 'Rejected: ' + (j.detail || 'clear the dropped channels first');
+  } else {
+    $('relaySaveMsg').textContent = 'Save failed (' + r.status + '): ' +
+      (j.detail || j.error || r.error || '?');
+  }
+}
 function buildGpioRows(){
   const gl = $('gpioList');
   HW_FUNCS.forEach(function(name){
@@ -646,6 +861,7 @@ function render(){
   $('longRange').textContent = '(' + cfg.long_press_min_ms + '-' + cfg.long_press_max_ms + ' ms)';
   $('shortMs').value = cfg.short_press_ms;
   $('longMs').value = cfg.long_press_ms;
+  renderRelaySection();
 
   const fl = $('funcList'); fl.innerHTML = '';
   FUNCS.forEach(function(name){
@@ -779,6 +995,8 @@ function doReboot(){
 $('rebootBtn').addEventListener('click', doReboot);
 
 $('saveAll').addEventListener('click', saveAll);
+$('saveRelays').addEventListener('click', saveRelays);
+$('relayCount').addEventListener('change', onRelayCountChange);
 applyHashToken();
 if (!tok()) {
   $('authBanner').classList.remove('hidden');

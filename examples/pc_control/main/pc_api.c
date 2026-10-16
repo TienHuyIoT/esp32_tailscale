@@ -22,6 +22,10 @@
  *   POST /api/v1/auth/api-token       generate/set/clear the API token (session)
  *   POST /api/v1/device/reboot        restart the ESP32 (token required; all
  *                                     configuration is kept)
+ *   GET  /api/v1/relays               relay channels: config + commanded state
+ *   POST /api/v1/relays               explicit ON/OFF for one relay channel
+ *   POST /api/v1/relays/config        relay channel configuration (Settings)
+
  *
  * Mutations require X-PC-Token (or Authorization: Bearer) to match the runtime
  * API token stored in NVS, falling back to CONFIG_PCCTL_API_TOKEN. Plain HTTP
@@ -39,6 +43,7 @@
 #include "pc_state.h"
 #include "pc_cmd.h"
 #include "pc_hid.h"
+#include "pc_relay.h"
 #include "ml_config_httpd.h"
 #include "microlink_internal.h"
 #include "esp_http_server.h"
@@ -197,6 +202,48 @@ static cJSON *slot_to_json(const pc_cmd_slot_t *s) {
     return o;
 }
 
+/* ---------- relay helpers ---------- */
+
+static cJSON *relay_channel_to_json(const pc_relay_snapshot_t *snap, uint8_t id) {
+    const pc_relay_channel_t *ch = &snap->channels[id];
+    cJSON *o = cJSON_CreateObject();
+    if (!o) return NULL;
+    cJSON_AddNumberToObject(o, "id", id);
+    cJSON_AddStringToObject(o, "name", ch->name);
+    cJSON_AddBoolToObject(o, "enabled", ch->enabled);
+    if (ch->gpio >= 0) cJSON_AddNumberToObject(o, "gpio", ch->gpio);
+    else cJSON_AddNullToObject(o, "gpio");
+    cJSON_AddStringToObject(o, "active_level",
+                            ch->active_level == PC_CFG_LEVEL_LOW ? "low" : "high");
+    cJSON_AddStringToObject(o, "startup_policy", "off");
+    cJSON_AddStringToObject(o, "state", ch->state ? "on" : "off");
+    const char *reason = NULL;
+    bool available = pc_relay_channel_available(snap, id, &reason);
+    cJSON_AddBoolToObject(o, "available", available);
+    if (!available && reason) cJSON_AddStringToObject(o, "unavailable_reason", reason);
+    return o;
+}
+
+/* Relay block for JSON responses. `full` includes every channel slot (the
+ * Settings page / API listing); otherwise only the active channels (the
+ * control page polls /api/v1/status). Static snapshot: handlers run on the
+ * shared httpd task (same rationale as the other static snapshots). */
+static cJSON *relays_to_json(bool full) {
+    static pc_relay_snapshot_t snap;
+    pc_relay_get(&snap);
+    cJSON *json = cJSON_CreateObject();
+    if (!json) return NULL;
+    cJSON_AddNumberToObject(json, "channel_count", snap.channel_count);
+    cJSON_AddNumberToObject(json, "max_channels", snap.max_channels);
+    cJSON *arr = cJSON_AddArrayToObject(json, "channels");
+    int n = full ? snap.max_channels : snap.channel_count;
+    for (int i = 0; i < n && arr; i++) {
+        cJSON *c = relay_channel_to_json(&snap, (uint8_t)i);
+        if (c) cJSON_AddItemToArray(arr, c);
+    }
+    return json;
+}
+
 /* ---------- GET /api/v1/status ---------- */
 
 static esp_err_t handler_status(httpd_req_t *req) {
@@ -280,6 +327,11 @@ static esp_err_t handler_status(httpd_req_t *req) {
     cJSON_AddNumberToObject(hid, "state_age_s", pc_hid_state_age_s());
     const char *hid_err = pc_hid_last_error();
     if (hid_err && hid_err[0]) cJSON_AddStringToObject(hid, "last_error", hid_err);
+
+    /* Relay channels: configuration + COMMANDED states for the /pc page.
+     * There is no contact feedback - "state" is the commanded logic level. */
+    cJSON *relays = relays_to_json(false);
+    if (relays) cJSON_AddItemToObject(json, "relays", relays);
 
     return send_json_status(req, NULL, json);
 }
@@ -530,6 +582,10 @@ static cJSON *config_to_json(void) {
     cJSON_AddNumberToObject(json, "short_press_max_ms", PC_CFG_SHORT_PRESS_MAX);
     cJSON_AddNumberToObject(json, "long_press_min_ms", PC_CFG_LONG_PRESS_MIN);
     cJSON_AddNumberToObject(json, "long_press_max_ms", PC_CFG_LONG_PRESS_MAX);
+
+    /* Relay channels (full list - the Settings page edits every slot). */
+    cJSON *relays = relays_to_json(true);
+    if (relays) cJSON_AddItemToObject(json, "relays", relays);
 
     cJSON *allowed = cJSON_AddArrayToObject(json, "allowed_gpios");
     size_t n = 0;
@@ -886,7 +942,8 @@ static esp_err_t handler_post_config(httpd_req_t *req) {
     if (err == ESP_ERR_INVALID_STATE) {
         return send_error(req, "409 Conflict", "gpio_conflict",
                           "PWR_RESET must not share a pin with a PWR_SW function, "
-                          "and functions sharing a pin must use the same active level");
+                          "and functions sharing a pin must use the same active level, "
+                          "and no pin may be used by a relay channel");
     }
     if (err == ESP_ERR_INVALID_ARG) {
         return send_error(req, "400 Bad Request", "invalid_config",
@@ -899,6 +956,259 @@ static esp_err_t handler_post_config(httpd_req_t *req) {
 
     cJSON *resp = config_to_json();
     if (!resp) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+    return send_json_status(req, NULL, resp);
+}
+
+/* ---------- GET /api/v1/relays ---------- */
+
+static esp_err_t handler_get_relays(httpd_req_t *req) {
+    cJSON *json = cJSON_CreateObject();
+    if (!json) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+    cJSON_AddBoolToObject(json, "ok", true);
+    cJSON *relays = relays_to_json(true);
+    if (!relays) {
+        cJSON_Delete(json);
+        return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+    }
+    cJSON_AddItemToObject(json, "relays", relays);
+    size_t count = 0;
+    const int *pins = pc_config_allowed_gpios(&count);
+    cJSON *allowed = cJSON_AddArrayToObject(json, "allowed_gpios");
+    for (size_t i = 0; i < count; i++) {
+        cJSON_AddItemToArray(allowed, cJSON_CreateNumber(pins[i]));
+    }
+    return send_json_status(req, NULL, json);
+}
+
+/* ---------- POST /api/v1/relays (explicit ON/OFF) ---------- */
+
+static esp_err_t handler_post_relays(httpd_req_t *req) {
+    const char *status = NULL, *error = NULL;
+    if (!authorize_mutation(req, &status, &error)) {
+        const char *detail =
+            (error && strcmp(error, "api_token_not_configured") == 0)
+                ? "set CONFIG_PCCTL_API_TOKEN (sdkconfig.credentials or menuconfig)"
+                : "send X-PC-Token or Authorization: Bearer";
+        return send_error(req, status, error, detail);
+    }
+    if (req->content_len > MAX_BODY_LEN) {
+        return send_error(req, "413 Payload Too Large", "body_too_large", NULL);
+    }
+    if (!content_type_is_json(req)) {
+        return send_error(req, "415 Unsupported Media Type", "content_type_required",
+                          "use Content-Type: application/json");
+    }
+    char *body = read_body(req);
+    if (!body) return send_error(req, "400 Bad Request", "invalid_body", NULL);
+    cJSON *json = cJSON_Parse(body);
+    free(body);
+    if (!json) return send_error(req, "400 Bad Request", "invalid_json", NULL);
+
+    cJSON *ch_item = cJSON_GetObjectItem(json, "channel");
+    cJSON *st_item = cJSON_GetObjectItem(json, "state");
+    if (!ch_item || !cJSON_IsNumber(ch_item)) {
+        cJSON_Delete(json);
+        return send_error(req, "400 Bad Request", "missing_channel",
+                          "channel is required (0-based number)");
+    }
+    int id = (int)ch_item->valuedouble;
+    if (!st_item || !cJSON_IsString(st_item) ||
+        (strcmp(st_item->valuestring, "on") != 0 &&
+         strcmp(st_item->valuestring, "off") != 0)) {
+        cJSON_Delete(json);
+        return send_error(req, "400 Bad Request", "invalid_state",
+                          "state must be \"on\" or \"off\" (never a toggle)");
+    }
+    bool on = strcmp(st_item->valuestring, "on") == 0;
+    cJSON_Delete(json);
+
+    /* static: handlers run on the shared httpd task; keeps the multi-KB
+     * snapshot off its 6 KB stack (same rationale as the other statics) */
+    static pc_relay_snapshot_t snap;
+    pc_relay_get(&snap);
+    if (id < 0 || id >= snap.channel_count) {
+        return send_error(req, "404 Not Found", "unknown_channel", NULL);
+    }
+    const char *reason = NULL;
+    if (!pc_relay_channel_available(&snap, (uint8_t)id, &reason)) {
+        return send_error(req, "403 Forbidden",
+                          snap.channels[id].enabled ? "gpio_not_configured"
+                                                    : "channel_disabled",
+                          reason);
+    }
+
+    bool changed = (snap.channels[id].state != on);
+    esp_err_t err = pc_relay_set_state((uint8_t)id, on);
+    if (err == ESP_ERR_INVALID_ARG) {
+        return send_error(req, "404 Not Found", "unknown_channel", NULL);
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_error(req, "409 Conflict", "state_conflict",
+                          "the channel configuration changed - reload the page");
+    }
+    if (err != ESP_OK) {
+        return send_error(req, "500 Internal Server Error", "hardware_failure",
+                          esp_err_to_name(err));
+    }
+
+    cJSON *resp = cJSON_CreateObject();
+    if (!resp) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddNumberToObject(resp, "channel", id);
+    cJSON_AddStringToObject(resp, "state", on ? "on" : "off");
+    cJSON_AddBoolToObject(resp, "changed", changed);
+    cJSON_AddStringToObject(resp, "note",
+                            "command issued - the relay contact state is not sensed");
+    ESP_LOGI(TAG, "relay %d -> %s commanded", id, on ? "ON" : "OFF");
+    return send_json_status(req, NULL, resp);
+}
+
+/* ---------- POST /api/v1/relays/config ---------- */
+
+static esp_err_t handler_post_relays_config(httpd_req_t *req) {
+    const char *status = NULL, *error = NULL;
+    if (!authorize_mutation(req, &status, &error)) {
+        const char *detail =
+            (error && strcmp(error, "api_token_not_configured") == 0)
+                ? "set CONFIG_PCCTL_API_TOKEN (browser token dialog)"
+                : "send X-PC-Token or Authorization: Bearer";
+        return send_error(req, status, error, detail);
+    }
+    if (req->content_len > MAX_BODY_LEN) {
+        return send_error(req, "413 Payload Too Large", "body_too_large", NULL);
+    }
+    if (!content_type_is_json(req)) {
+        return send_error(req, "415 Unsupported Media Type", "content_type_required", NULL);
+    }
+    char *body = read_body(req);
+    if (!body) return send_error(req, "400 Bad Request", "invalid_body", NULL);
+    cJSON *json = cJSON_Parse(body);
+    free(body);
+    if (!json) return send_error(req, "400 Bad Request", "invalid_json", NULL);
+
+    /* static: the patch is ~1 KB; keeps the httpd stack small (single
+     * serialized httpd task - same rationale as the snapshot statics) */
+    static pc_relay_config_patch_t patch;
+    memset(&patch, 0, sizeof(patch));
+
+    cJSON *count = cJSON_GetObjectItem(json, "channel_count");
+    if (count) {
+        if (!cJSON_IsNumber(count) || count->valuedouble < 0 ||
+            count->valuedouble > CONFIG_PCCTL_RELAY_MAX_CHANNELS) {
+            cJSON_Delete(json);
+            return send_error(req, "400 Bad Request", "invalid_field", "channel_count");
+        }
+        patch.set_channel_count = true;
+        patch.channel_count = (uint8_t)count->valuedouble;
+    }
+
+    cJSON *channels = cJSON_GetObjectItem(json, "channels");
+    if (channels) {
+        if (!cJSON_IsArray(channels)) {
+            cJSON_Delete(json);
+            return send_error(req, "400 Bad Request", "invalid_field", "channels");
+        }
+        cJSON *c = NULL;
+        cJSON_ArrayForEach(c, channels) {
+            cJSON *id_item = cJSON_IsObject(c) ? cJSON_GetObjectItem(c, "id") : NULL;
+            if (!id_item || !cJSON_IsNumber(id_item)) {
+                cJSON_Delete(json);
+                return send_error(req, "400 Bad Request", "invalid_field", "channels.id");
+            }
+            int id = (int)id_item->valuedouble;
+            if (id < 0 || id >= CONFIG_PCCTL_RELAY_MAX_CHANNELS || patch.set_channels[id]) {
+                cJSON_Delete(json);
+                return send_error(req, "400 Bad Request", "invalid_field",
+                                  "channels.id (0..max-1, unique)");
+            }
+            patch.set_channels[id] = true;
+            pc_relay_channel_patch_t *p = &patch.channels[id];
+            cJSON *f;
+            if ((f = cJSON_GetObjectItem(c, "name")) != NULL) {
+                if (!cJSON_IsString(f) || strlen(f->valuestring) > PC_RELAY_NAME_MAX) {
+                    cJSON_Delete(json);
+                    return send_error(req, "400 Bad Request", "invalid_field",
+                                      "channels.name (max 32 bytes, printable)");
+                }
+                snprintf(p->name, sizeof(p->name), "%s", f->valuestring);
+                p->set_name = true;
+            }
+            if ((f = cJSON_GetObjectItem(c, "enabled")) != NULL) {
+                if (!cJSON_IsBool(f)) {
+                    cJSON_Delete(json);
+                    return send_error(req, "400 Bad Request", "invalid_field", "channels.enabled");
+                }
+                p->enabled = cJSON_IsTrue(f);
+                p->set_enabled = true;
+            }
+            if ((f = cJSON_GetObjectItem(c, "gpio")) != NULL) {
+                if (cJSON_IsNull(f)) {
+                    p->gpio = -1;                       /* NC */
+                } else if (cJSON_IsNumber(f)) {
+                    p->gpio = (int)f->valuedouble;
+                } else {
+                    cJSON_Delete(json);
+                    return send_error(req, "400 Bad Request", "invalid_field", "channels.gpio");
+                }
+                p->set_gpio = true;
+            }
+            if ((f = cJSON_GetObjectItem(c, "active_level")) != NULL) {
+                if (cJSON_IsTrue(f)) {
+                    p->level = PC_CFG_LEVEL_HIGH;
+                } else if (cJSON_IsFalse(f)) {
+                    p->level = PC_CFG_LEVEL_LOW;
+                } else if (cJSON_IsString(f) && strcmp(f->valuestring, "high") == 0) {
+                    p->level = PC_CFG_LEVEL_HIGH;
+                } else if (cJSON_IsString(f) && strcmp(f->valuestring, "low") == 0) {
+                    p->level = PC_CFG_LEVEL_LOW;
+                } else {
+                    cJSON_Delete(json);
+                    return send_error(req, "400 Bad Request", "invalid_field",
+                                      "channels.active_level (\"high\" | \"low\")");
+                }
+                p->set_level = true;
+            }
+            if ((f = cJSON_GetObjectItem(c, "startup_policy")) != NULL) {
+                if (!cJSON_IsString(f) || strcmp(f->valuestring, "off") != 0) {
+                    cJSON_Delete(json);
+                    return send_error(req, "400 Bad Request", "invalid_field",
+                                      "channels.startup_policy (fixed to \"off\" - "
+                                      "energized loads are never restored)");
+                }
+                p->startup = PC_RELAY_STARTUP_OFF;
+                p->set_startup = true;
+            }
+        }
+    }
+    cJSON_Delete(json);
+
+    esp_err_t err = pc_relay_config_apply(&patch);
+    if (err == ESP_ERR_NOT_ALLOWED) {
+        return send_error(req, "409 Conflict", "unsafe_reduction",
+                          "a channel being dropped still has a GPIO mapping or is "
+                          "enabled - set it to NC + disabled first (no mapping is "
+                          "silently removed)");
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_error(req, "409 Conflict", "gpio_conflict",
+                          "each relay channel needs its own pin that is not used "
+                          "by another relay channel or a PC-control function");
+    }
+    if (err == ESP_ERR_INVALID_ARG) {
+        return send_error(req, "400 Bad Request", "invalid_config",
+                          "check field values (pin allowlist, name/level ranges)");
+    }
+    if (err != ESP_OK) {
+        return send_error(req, "500 Internal Server Error", "nvs_error",
+                          esp_err_to_name(err));
+    }
+
+    cJSON *resp = cJSON_CreateObject();
+    if (!resp) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON *relays = relays_to_json(true);
+    if (relays) cJSON_AddItemToObject(resp, "relays", relays);
+    ESP_LOGI(TAG, "relay configuration saved (all channels driven OFF)");
     return send_json_status(req, NULL, resp);
 }
 
@@ -1073,6 +1383,9 @@ esp_err_t pc_api_start(microlink_t *ml) {
         { .uri = "/api/v1/auth/api-token",   .method = HTTP_GET,  .handler = handler_get_api_token,    .user_ctx = ml },
         { .uri = "/api/v1/auth/api-token",   .method = HTTP_POST, .handler = handler_post_api_token,   .user_ctx = ml },
         { .uri = "/api/v1/device/reboot",    .method = HTTP_POST, .handler = handler_post_reboot,      .user_ctx = ml },
+        { .uri = "/api/v1/relays",           .method = HTTP_GET,  .handler = handler_get_relays,       .user_ctx = ml },
+        { .uri = "/api/v1/relays",           .method = HTTP_POST, .handler = handler_post_relays,      .user_ctx = ml },
+        { .uri = "/api/v1/relays/config",    .method = HTTP_POST, .handler = handler_post_relays_config, .user_ctx = ml },
     };
 
     int registered = 0;

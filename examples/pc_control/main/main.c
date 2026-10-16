@@ -34,6 +34,7 @@
 #include "pc_controller.h"
 #include "pc_config.h"
 #include "pc_auth.h"
+#include "pc_relay.h"
 #include "pc_api.h"
 #include "pc_hid.h"
 
@@ -223,6 +224,9 @@ void app_main(void) {
 
     /* Runtime configuration (NVS-backed; Kconfig values are the defaults) */
     pc_config_init();
+    /* Relay channels (must follow pc_config_init: pin ownership cross-check;
+     * drives every configured relay pin to its idle/OFF level) */
+    pc_relay_init();
     /* Admin login (default admin/admin) + runtime API token */
     pc_auth_init();
 

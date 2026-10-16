@@ -94,4 +94,22 @@ menu "Example Configuration"
 
     endmenu
 
+    menu "PC Control - relay channels"
+
+        config PCCTL_RELAY_MAX_CHANNELS
+            int "Maximum number of relay channels"
+            default 8
+            range 1 16
+            help
+                Firmware limit for the configurable relay channel count
+                (0..this), set at runtime in the Settings UI (/pc/settings,
+                section "Relay channels") and stored in NVS (namespace
+                "pc_ctl", key "relays"). Each configured channel reserves its
+                own board-allowed GPIO; relay pins must not overlap the
+                PC-control function pins. Relays always start OFF -
+                energized loads are never restored after a reboot.
+
+    endmenu
+
+
 endmenu

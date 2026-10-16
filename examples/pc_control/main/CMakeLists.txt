@@ -4,6 +4,7 @@ idf_component_register(
          "pc_config.c"
          "pc_state.c"
          "pc_hw.c"
+         "pc_relay.c"
          "pc_auth.c"
          "pc_controller.c"
          "pc_api.c"

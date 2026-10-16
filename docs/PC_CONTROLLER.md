@@ -73,7 +73,7 @@ name).
 | Path | Purpose |
 |------|---------|
 | `examples/pc_control/` | firmware example (see its README) |
-| `examples/pc_control/main/pc_*.c/h` | firmware modules (command defs, state store, hw abstraction + mock + gated GPIO, auth/login, controller task, API, embedded UIs) |
+| `examples/pc_control/main/pc_*.c/h` | firmware modules (command defs, state store, real-GPIO hw layer, relay manager, auth/login, controller task, API, embedded UIs) |
 | `tools/serial_capture.py` | non-interactive COM-port log capture for flash cycles |
 | `docs/PC_CONTROLLER.md` | this document |
 
@@ -82,7 +82,7 @@ name).
 | File | Change | Why |
 |------|--------|-----|
 | `components/microlink/include/ml_config_httpd.h` | added `struct httpd_data *ml_config_httpd_get_handle(ctx)` (+stub) | exposes the running port-80 `esp_http_server` handle so sibling modules can register routes on the same server instead of starting a second one. The opaque `struct httpd_data *` spelling keeps `esp_http_server.h` out of the header. |
-| `components/microlink/src/ml_config_httpd.c` | getter implementation; `max_uri_handlers` 16 -> 24 | config routes + pc_control routes + margin. |
+| `components/microlink/src/ml_config_httpd.c` | getter implementation; `max_uri_handlers` 16 -> 40 | config routes + pc_control routes (incl. relay) + margin. |
 
 Nothing else in the component was modified; `examples/basic_connect`
 and the other examples are untouched.
@@ -390,4 +390,70 @@ window on the PC.
   "\" swap on en-GB, etc.).
 - At the secure desktop (Ctrl+Alt+Del prompt) a plain keyboard cannot send
   the SAS; keystrokes only reach the password box once it is shown.
+
+## Relay control (relay channels)
+
+A configurable set of relay channels drives real GPIO outputs (relay
+modules / switchable loads) from the same port-80 server and /pc page.
+Implemented per `docs/RELAY_CONTROL.md`; module: `pc_relay.[ch]`.
+
+- Channel model: `id` (index), `name` (user text, <= 32 bytes, UTF-8),
+  `enabled`, `gpio` (NC or a board-allowlisted pin), `active_level`
+  (Active HIGH/LOW - the level driven to energize the relay) and a fixed
+  safe `startup_policy` (OFF; other values are rejected).
+- Channel count 0..`CONFIG_PCCTL_RELAY_MAX_CHANNELS` (default 8, range
+  1-16) is set in `/pc/settings` -> "Relay channels". Stored in the
+  existing NVS namespace `pc_ctl`, key `relays` (versioned blob), written
+  only on explicit saves; a failed write changes nothing.
+- Firmware-side safety rules (not UI-only):
+  - every configured pin is driven to its idle (OFF) level at boot and on
+    every configuration change - a configuration change can never pulse;
+  - relay pins must come from the board allowlist, be unique across
+    channels and must not overlap the PC-control function pins; enforced
+    on BOTH save paths (`pc_relay_config_apply` and `pc_config_apply`);
+  - ON/OFF is rejected for disabled channels and GPIO = NC;
+  - a channel-count reduction that would drop a channel with a GPIO
+    mapping or the Enable flag is rejected (`409 unsafe_reduction`);
+  - saving relay settings switches all channels OFF (safe-start apply)
+    and a reboot never restores an energized relay;
+  - `state` is the COMMANDED logic level only - there is no relay contact
+    feedback, so the physical load state is never claimed.
+- Invalid NVS entries are recovered per channel (parked as NC + disabled)
+  without erasing anything; unknown blob versions fall back to defaults.
+
+### API
+
+    GET  /api/v1/relays        relay channels: config + commanded state
+                               (+ allowed_gpios)
+    POST /api/v1/relays        {"channel":0,"state":"on"|"off"}  (token)
+         200 {"ok":true,"channel":0,"state":"on","changed":true,
+              "note":"command issued - the relay contact state is not sensed"}
+         400 missing_channel | invalid_state
+         401 missing_token | invalid_token / 403 api_token_not_configured
+         403 channel_disabled | gpio_not_configured
+         404 unknown_channel  409 state_conflict  500 hardware_failure
+    POST /api/v1/relays/config {"channel_count":N,"channels":[{"id":0,
+              "name":"...","enabled":true,"gpio":13,"active_level":"high",
+              "startup_policy":"off"}, ...]}                    (token)
+         200 {"ok":true,"relays":{...}}
+         400 invalid_field | invalid_config
+         409 gpio_conflict | unsafe_reduction
+         500 nvs_error
+
+Explicit ON/OFF commands (never a toggle) are idempotent: retried
+requests cannot reverse the intended state. The relay block also appears
+in `GET /api/v1/status` (active channels, for the /pc page polling) and in
+`GET/POST /api/v1/config` (all slots, for the Settings page).
+
+### Hardware notes (relay modules)
+
+- Verify the relay module's trigger polarity (opto modules are commonly
+  low-trigger) and set Active HIGH/LOW to match - a wrong level inverts
+  every ON/OFF command.
+- The firmware cannot know whether the switched load is AC or DC and
+  never treats GPIO/commanded state as proof of contact state. Confirm
+  the relay contact rating (voltage / current / load type) and use mains
+  isolation, an enclosure and inductive-load suppression as required.
+- 5 V relay boards (e.g. JD-VCC modules) may need a level-shift stage on
+  their inputs when driven from 3.3 V GPIOs; check the input threshold.
 

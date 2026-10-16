@@ -1260,8 +1260,8 @@ esp_err_t ml_config_httpd_start(ml_config_ctx_t *ctx, microlink_t *ml) {
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = 6144;
-    /* 13 base routes + 6 pc_control routes (/pc + /api/v1/...) */
-    config.max_uri_handlers = 32;
+    /* 13 base routes + 21 pc_control routes (/pc + /api/v1/...) + margin */
+    config.max_uri_handlers = 40;
     config.uri_match_fn = httpd_uri_match_wildcard;
 
     esp_err_t err = httpd_start(&ctx->httpd, &config);

@@ -30,6 +30,7 @@ examples/pc_control/
     pc_state.[ch]       state store: PC state + command history
     pc_hw.h             hardware layer API (PWR_SW/RESET_SW actions)
     pc_hw.c             real GPIO pulses (PWR_SW / RESET_SW)
+    pc_relay.[ch]       relay channels (NVS config + commanded ON/OFF state)
     pc_auth.[ch]        admin login (salted SHA-256) + runtime API token
     pc_controller.[ch]  pc_ctl task: queue, dedup, cooldown, timeouts
     pc_api.[ch]         /pc + /api/v1/* handlers (shared port-80 server)
@@ -111,6 +112,9 @@ POST /api/v1/auth/credentials           change login (session required)
 GET  /api/v1/auth/api-token             token state (session required)
 POST /api/v1/auth/api-token             generate/set/clear (session required)
 POST /api/v1/device/reboot              restart the ESP32 (token required; keeps config)
+GET  /api/v1/relays                     relay channels: config + commanded state
+POST /api/v1/relays                     set one channel {"channel":0,"state":"on"|"off"}
+POST /api/v1/relays/config              update relay channel configuration (Settings)
 ```
 
 `POST` replies `202 {"state":"accepted"}` - acceptance is not completion;
@@ -172,3 +176,21 @@ password - only that keystrokes were sent. See docs/PC_CONTROLLER.md
 US keyboard-layout caveat and the COM9/console notes. Build with
 CONFIG_PCCTL_ENABLE_HID=y (+ CONFIG_TINYUSB_HID_COUNT=1; USB-Serial-JTAG
 disabled - see sdkconfig.defaults).
+
+## Relay channels
+
+/pc has a "Relays" section (one card per configured channel with explicit
+ON/OFF buttons and the commanded state) and /pc/settings has the "Relay
+channels" card (channel count, per-channel name / enable / GPIO / active
+level; startup is fixed OFF). Saving relay settings writes NVS once and
+drives every configured pin to its idle OFF level - a save can never
+pulse, and nothing is ever restored ON after a reboot.
+
+Rules enforced in firmware: relay pins come from the board allowlist, are
+unique across channels and never overlap the PC-control function pins; a
+channel-count reduction that would drop a channel with a GPIO mapping or
+the Enable flag is rejected (clear the channel to NC + disabled first);
+ON/OFF is rejected for disabled channels and NC pins. The API reports the
+COMMANDED state only - there is no relay contact feedback. See
+docs/PC_CONTROLLER.md -> "Relay control" for the full contract and the
+relay-module hardware notes (trigger polarity, AC/DC rating, isolation).

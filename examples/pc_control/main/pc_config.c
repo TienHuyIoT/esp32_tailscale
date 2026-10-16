@@ -1,4 +1,5 @@
 #include "pc_config.h"
+#include "pc_relay.h"
 #include "esp_log.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -205,6 +206,14 @@ esp_err_t pc_config_apply(const pc_config_patch_t *patch) {
         hw.level[s] = (uint8_t)lv;
     }
     if (gpio_conflicts(hw.gpio, hw.level)) return ESP_ERR_INVALID_STATE;
+    /* Relay channels must not share a pin with a PC-control function -
+     * enforced here as well as in pc_relay_config_apply(), so BOTH save
+     * paths reject the conflict firmware-side. */
+    for (int s = 0; s < PC_CFG_GPIO_SLOTS; s++) {
+        if (hw.gpio[s] >= 0 && pc_relay_gpio_in_use(hw.gpio[s])) {
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
     if (patch->set_timings) {
         if (patch->short_ms < PC_CFG_SHORT_PRESS_MIN ||
             patch->short_ms > PC_CFG_SHORT_PRESS_MAX ||
