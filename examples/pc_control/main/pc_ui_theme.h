@@ -248,7 +248,7 @@ html.scene-space{--bg:#03030b;--bg2:#080719;--panel:rgba(16,10,34,.34);--panel-s
 html.scene-space body{background:radial-gradient(ellipse at 50% 55%,rgba(18,20,69,.12),transparent 50%),linear-gradient(180deg,#010209,#030514 65%,#010208)}
 html.scene-space body:before,html.scene-space body:after{display:none}
 html.scene-space #galaxyCanvas{position:fixed;inset:0;width:100%;height:100%;z-index:0;pointer-events:none;display:block;opacity:1}
-html.scene-space #webglBackdrop{position:fixed;inset:0;width:100%;height:100%;z-index:2;pointer-events:none;display:block;opacity:.30;animation:alienPulse 12s ease-in-out infinite}
+html.scene-space #webglBackdrop{position:fixed;inset:0;width:100%;height:100%;z-index:2;pointer-events:none;display:block;opacity:.30}
 html.scene-space .ambient{z-index:2;opacity:.22}
 html.scene-space .orb.one,html.scene-space .orb.two,html.scene-space .orb.three{opacity:.18;filter:blur(48px)}
 html.scene-space .app{position:relative;z-index:3}
@@ -287,8 +287,8 @@ html.scene-space .glass[data-tilt] .action-icon,html.scene-space .glass[data-til
 html.scene-space .glass[data-tilt] .run-btn,html.scene-space .glass[data-tilt] button{transform:translateZ(28px)}
 html.scene-space .action-card[data-tilt]:hover,html.scene-space .relay-card[data-tilt]:hover{box-shadow:0 38px 75px rgba(0,0,0,.45),0 0 36px rgba(83,220,255,.12),inset 0 1px 0 rgba(255,255,255,.2)}
 }
-@keyframes alienPulse{0%,100%{filter:hue-rotate(0deg) brightness(1)}50%{filter:hue-rotate(18deg) brightness(1.09)}}
-@media(max-width:760px),(prefers-reduced-motion:reduce){html.scene-space #webglBackdrop{animation:none}}
+/* alienPulse (full-screen hue-rotate filter) removed on purpose: continuous
+ * full-screen filter repaints cost far more than the subtle look it added. */
 html.scene-space .planetary-scene{position:fixed;inset:0;z-index:1;pointer-events:none;overflow:hidden;perspective:1200px}
 html.scene-space .planet{position:absolute;border-radius:50%;transform-style:preserve-3d}
 html.scene-space .planet-giant{width:clamp(330px,42vw,690px);height:clamp(330px,42vw,690px);left:-10vw;top:17vh;opacity:.84;background:radial-gradient(ellipse at 27% 28%,rgba(240,219,255,.82) 0%,rgba(133,105,205,.55) 5%,transparent 18%),radial-gradient(ellipse at 30% 34%,#554a91 0%,#292e69 24%,#171a43 48%,#080d26 72%,#020611 100%);box-shadow:inset -35px -22px 68px rgba(0,0,0,.88),inset 12px 8px 30px rgba(205,187,255,.18),0 0 38px rgba(106,104,255,.13),0 0 100px rgba(82,70,255,.12);animation:planetDrift 34s ease-in-out infinite}
@@ -452,27 +452,46 @@ function removeDom(){
 function pauseAll(hidden){
   for (var i = 0; i < mods.length; i++) { if (mods[i].visibility) mods[i].visibility(hidden); }
 }
-function apply(scene){
+function startPhase(phase){
+  for (var i = 0; i < mods.length; i++) {
+    if ((mods[i].phase || 1) !== phase) continue;
+    try { mods[i].start(); } catch (e) {}
+  }
+}
+function stopAll(){
+  for (var j = 0; j < mods.length; j++) { try { mods[j].stop(); } catch (e) {} }
+}
+function idle(fn){
+  if (window.requestIdleCallback) requestIdleCallback(fn, { timeout: 900 });
+  else setTimeout(fn, 120);
+}
+function apply(scene, lazy){
   var isSpace = (scene === 'space');
   html.classList.toggle('scene-space', isSpace);
   if (isSpace) {
     buildDom();
     if (!running) {
       running = true;
-      for (var i = 0; i < mods.length; i++) { try { mods[i].start(); } catch (e) {} }
+      if (lazy) {
+        /* First paint stays light: the CSS scene shows immediately and the
+         * WebGL tiers start on idle (galaxy+tilt first, prisms/orb later) so
+         * shader compilation never blocks a page switch. */
+        idle(function(){ if (running) startPhase(1); });
+        setTimeout(function(){ if (running) startPhase(2); }, 400);
+      } else {
+        startPhase(1);
+        startPhase(2);
+      }
     }
   } else {
-    if (running) {
-      running = false;
-      for (var j = 0; j < mods.length; j++) { try { mods[j].stop(); } catch (e) {} }
-    }
+    if (running) { running = false; stopAll(); }
     removeDom();
     html.classList.remove('webgl-ready', 'webgl-fallback', 'orb-gl');
   }
 }
 window.__isuiSpaceBoot = function(){
   document.addEventListener('visibilitychange', function(){ pauseAll(document.hidden); });
-  apply(window.isuiGetScene());
+  apply(window.isuiGetScene(), true);
 };
 })();
 /* Pointer-driven 3D tilt (CSS owns rendering; JS only updates transform values). */
@@ -542,7 +561,7 @@ window.__isuiSpaceAdd({
 var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 var canvas = null, ctx2d = null, gl = null, prog = null;
 var uRes = null, uTime = null, uMouse = null, uMotion = null;
-var stars = null, raf = 0, t0 = 0, mx = 0, my = 0, started = false, paused = false;
+var stars = null, raf = 0, t0 = 0, lastDraw = 0, mx = 0, my = 0, started = false, paused = false;
 var VS = 'attribute vec2 aPos;varying vec2 vUv;void main(){vUv=aPos*.5+.5;gl_Position=vec4(aPos,0.,1.);}';
 var FS = `precision highp float;
 varying vec2 vUv;
@@ -637,7 +656,7 @@ function initGL(){
   return true;
 }
 function drawGL(now){
-  var dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  var dpr = Math.min(window.devicePixelRatio || 1, 1.5) * 0.66; /* soft nebula: smaller backing store, big GPU win */
   var w = Math.max(1, Math.floor(window.innerWidth * dpr));
   var h = Math.max(1, Math.floor(window.innerHeight * dpr));
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
@@ -664,7 +683,7 @@ function init2D(){
   return true;
 }
 function draw2D(now){
-  var dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  var dpr = Math.min(window.devicePixelRatio || 1, 1.5) * 0.66; /* soft starfield: smaller backing store */
   var w = Math.max(1, Math.floor(window.innerWidth * dpr));
   var h = Math.max(1, Math.floor(window.innerHeight * dpr));
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
@@ -687,7 +706,11 @@ function onMouse(e){
   my = (e.clientY / window.innerHeight - .5) * 2;
 }
 function frame(now){
-  if (gl) drawGL(now); else draw2D(now);
+  /* ~30 fps is plenty for the slow nebula drift and halves the GPU load. */
+  if (now - lastDraw >= 32) {
+    lastDraw = now;
+    if (gl) drawGL(now); else draw2D(now);
+  }
   raf = requestAnimationFrame(frame);
 }
 window.__isuiSpaceAdd({
@@ -702,6 +725,7 @@ window.__isuiSpaceAdd({
     if (!ok) { canvas = null; return; }
     started = true;
     t0 = performance.now();
+    lastDraw = 0;
     if (window.matchMedia('(pointer:fine)').matches) {
       document.addEventListener('pointermove', onMouse, { passive: true });
     }
@@ -986,6 +1010,7 @@ function frame(t){
   raf = requestAnimationFrame(frame);
 }
 window.__isuiSpaceAdd({
+  phase: 2,
   start: function(){
     if (started) return;
     backdrop = document.getElementById('webglBackdrop');

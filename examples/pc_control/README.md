@@ -219,5 +219,12 @@ desktop, and depth-styled glass cards.
   WebGL drawn once); browsers without WebGL fall back to a lightweight
   2D-canvas starfield; WebGL is paused while the tab is hidden and disposed
   when switching to Glass.
+- Page-switch performance: the shared theme CSS/JS is served as long-lived
+  cacheable assets under `/pc/static/`, versioned by the firmware build id
+  (every flash auto-busts the browser cache), so switching pages only
+  re-fetches a small HTML page (roughly 13-50 KB instead of 81-116 KB).
+  The CSS scene paints immediately while the WebGL tiers start on idle
+  (galaxy at ~30 fps with a reduced backing-store scale, prisms/orb a
+  moment later), so shader compilation never blocks navigation.
 - The reference is a visual guide: no demo behavior was copied - every
   control stays wired to the real APIs.

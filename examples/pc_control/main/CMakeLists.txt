@@ -14,5 +14,7 @@ idf_component_register(
              esp_http_server espressif__cjson esp_timer espressif__esp_tinyusb
     # esp_driver_gpio backs the real GPIO hardware layer (pc_hw.c).
     # espressif__esp_tinyusb backs pc_hid.c (gated by CONFIG_PCCTL_ENABLE_HID).
-    PRIV_REQUIRES esp_driver_gpio
+    # esp_app_format backs esp_app_desc.h (firmware version/build id used for
+    # cache-busting the /pc/static/* assets).
+    PRIV_REQUIRES esp_driver_gpio esp_app_format
 )
