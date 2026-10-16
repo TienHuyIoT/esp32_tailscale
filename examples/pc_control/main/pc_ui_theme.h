@@ -256,6 +256,12 @@ html.scene-space .glass,html.scene-space .action-card,html.scene-space .relay-ca
 html.scene-space .glass{background:linear-gradient(145deg,rgba(19,23,48,.34),rgba(7,9,25,.24) 50%,rgba(13,8,32,.30));backdrop-filter:blur(15px) saturate(135%);-webkit-backdrop-filter:blur(15px) saturate(135%);border-color:rgba(191,211,255,.19)}
 html.scene-space .glass:before{background:linear-gradient(125deg,rgba(255,255,255,.17),transparent 15%,transparent 54%,rgba(0,255,220,.065) 76%,rgba(250,76,255,.12)),radial-gradient(440px circle at var(--mx,30%) var(--my,0%),rgba(255,242,255,.18),transparent 46%)}
 html.scene-space .action-card,html.scene-space .relay-card,html.scene-space .metric-panel{border-radius:19px;overflow:visible;isolation:isolate;transform-style:preserve-3d;transform:perspective(1250px) rotateX(8deg) rotateY(-1deg) translateZ(0);background:linear-gradient(145deg,rgba(25,32,59,.66),rgba(7,10,27,.80) 65%,rgba(10,7,29,.87));border-top:1px solid rgba(210,229,255,.46);border-left:1px solid rgba(228,204,255,.28);border-right:1px solid rgba(99,231,255,.42);border-bottom:1px solid rgba(180,105,255,.42);box-shadow:inset 0 2px 0 rgba(255,255,255,.22),inset 1px 0 0 rgba(255,245,255,.10),inset 0 -3px 0 rgba(0,0,0,.52),0 2px 0 rgba(0,255,227,.30),0 5px 0 rgba(36,19,71,.98),0 8px 0 rgba(13,8,34,.98),0 11px 0 rgba(5,4,20,.96),0 16px 0 rgba(2,2,12,.86),0 25px 30px rgba(0,0,0,.58),0 42px 60px rgba(0,0,0,.44),-8px 14px 36px rgba(0,255,220,.045),8px 18px 38px rgba(244,45,255,.045)}
+/* Desktop (fine pointer): cards are FLAT from the very first paint - the
+ * JS tilt module adds data-tilt at start and tracks the pointer; without
+ * this override the static "deck" transform below would show a skewed,
+ * unbalanced look on reload until the first mouse move. Touch/mobile keep
+ * the static deck transform (flattened again at <=760px). */
+@media (pointer:fine){html.scene-space .action-card,html.scene-space .relay-card,html.scene-space .metric-panel{transform:perspective(1100px) rotateX(0deg) rotateY(0deg) translateZ(0)}}
 html.scene-space .action-card:before,html.scene-space .relay-card:before,html.scene-space .metric-panel:before{content:"";position:absolute;inset:0;z-index:0;pointer-events:none;border-radius:inherit;background:linear-gradient(118deg,rgba(255,255,255,.24),rgba(255,255,255,.045) 5%,transparent 19%,transparent 66%,rgba(0,255,224,.10) 83%,rgba(239,63,255,.16)),radial-gradient(350px circle at var(--mx,18%) var(--my,5%),rgba(255,244,255,.18),transparent 54%)}
 html.scene-space .action-card:after,html.scene-space .relay-card:after,html.scene-space .metric-panel:after{content:"";position:absolute;left:5px;right:-2px;bottom:-12px;height:14px;z-index:-1;border-radius:0 0 13px 13px;background:linear-gradient(180deg,rgba(53,43,94,.98),rgba(13,11,34,.99) 52%,rgba(2,2,11,.99));border:1px solid rgba(0,255,224,.22);border-top:1px solid rgba(225,163,255,.44);box-shadow:0 0 12px rgba(0,255,224,.10),0 9px 13px rgba(0,0,0,.4),0 17px 24px rgba(0,0,0,.36);transform:skewX(-1.5deg);pointer-events:none}
 html.scene-space .action-card>*,html.scene-space .relay-card>*,html.scene-space .metric-panel>*{position:relative;z-index:1}
@@ -533,6 +539,17 @@ function reset(){
   target = null;
 }
 function onOut(e){ if (target && !target.contains(e.relatedTarget)) reset(); }
+/* Mark every matching card so the pointer-tilt transform applies at load
+ * (reference behavior) - otherwise freshly rendered cards would keep the
+ * static deck tilt until the first pointermove over them. */
+function tiltRefresh(){
+  if (!on) return;
+  var cards = document.querySelectorAll(sel);
+  for (var i = 0; i < cards.length; i++) {
+    if (!cards[i].hasAttribute('data-tilt')) cards[i].setAttribute('data-tilt', '');
+  }
+}
+window.isuiTiltRefresh = tiltRefresh;
 window.__isuiSpaceAdd({
   start: function(){
     if (on || !fine || reduced) return;
@@ -540,6 +557,7 @@ window.__isuiSpaceAdd({
     document.addEventListener('pointermove', onMove, { passive: true });
     document.addEventListener('pointerleave', reset);
     document.addEventListener('pointerout', onOut);
+    tiltRefresh();
   },
   stop: function(){
     if (!on) return;

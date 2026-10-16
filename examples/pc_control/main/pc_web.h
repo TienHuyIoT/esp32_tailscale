@@ -388,6 +388,7 @@ function renderRelays(rels){
         '<button class="off-btn config-btn" type="button" data-config="' + c.id + '" aria-label="Configure ' + label + '" title="Configure channel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m14 5 5 5M4 20l4-.8L19 8a2.1 2.1 0 0 0-3-3L5 16l-1 4Z"/></svg></button></div>' +
         '<p class="hint" id="rMsg-' + c.id + '" style="min-height:1em"></p></article>';
     }).join('');
+    if (window.isuiTiltRefresh) window.isuiTiltRefresh();
   }
   rels.forEach(function(c){
     const on = c.state === 'on';
