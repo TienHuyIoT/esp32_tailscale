@@ -1,23 +1,20 @@
 /**
  * @file pc_hw.h
- * @brief Hardware abstraction for POWER_ON / WAKE_UP / PWR_RESET /
- *        FORCE_POWER_OFF.
+ * @brief Hardware layer for POWER_ON / WAKE_UP / PWR_RESET / FORCE_POWER_OFF:
+ *        real GPIO pulses on the motherboard front-panel inputs.
  *
- * The active implementation is selected at build time:
- *  - pc_hw_mock  : default; simulates every action, touches no GPIO;
- *  - pc_hw_gpio  : real pulses, compiled only with
- *                  CONFIG_PCCTL_ENABLE_HW_GPIO=y (off until an
- *                  electrically verified interface exists).
+ * There is exactly one implementation (pc_hw.c) - no simulation mode. Pins,
+ * active level and pulse timings come from the runtime Settings UI (NVS) and
+ * are driven ONLY on demand, so a reset or reboot cannot actuate anything.
  *
- * SHUTDOWN / RESTART are never routed through this interface (they are
- * Windows operations and go to the agent).
+ * Never wire a GPIO straight to PWR_SW# / RESET_SW#: use a transistor /
+ * optocoupler / isolated relay stage.
  */
 
 #pragma once
 
 #include "esp_err.h"
 #include "pc_cmd.h"
-#include "sdkconfig.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -33,23 +30,17 @@ typedef struct {
     uint32_t hold_ms;   /* FORCE_POWER_OFF hold override (0 = default long) */
 } pc_hw_params_t;
 
-typedef struct {
-    const char *name;   /* "mock" | "gpio" */
-    /* Configure outputs; safe to call once at startup. */
-    esp_err_t (*init)(void);
-    /* Execute synchronously (blocks for the action duration). Called from
-     * the pc_ctl task only. Fills `detail` with an honest result line. */
-    esp_err_t (*execute)(pc_cmd_id_t id, const pc_hw_params_t *params,
-                         char *detail, size_t detail_len);
-    /* Action duration in ms (used for deadlines/progress display). */
-    uint32_t (*duration_ms)(pc_cmd_id_t id, const pc_hw_params_t *params);
-} pc_hw_ops_t;
+/** Configure the outputs; safe to call once at startup. A non-OK result makes
+ *  the controller report every command as unavailable. */
+esp_err_t pc_hw_init(void);
 
-extern const pc_hw_ops_t pc_hw_mock_ops;
+/** Execute synchronously (blocks for the action duration). Called from the
+ *  pc_ctl task only. Fills `detail` with an honest result line. */
+esp_err_t pc_hw_execute(pc_cmd_id_t id, const pc_hw_params_t *params,
+                        char *detail, size_t detail_len);
 
-#if CONFIG_PCCTL_ENABLE_HW_GPIO
-extern const pc_hw_ops_t pc_hw_gpio_ops;
-#endif
+/** Action duration in ms (used for deadlines/progress display). */
+uint32_t pc_hw_duration_ms(pc_cmd_id_t id, const pc_hw_params_t *params);
 
 #ifdef __cplusplus
 }

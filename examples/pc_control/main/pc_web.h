@@ -4,13 +4,15 @@
  *        HTML/CSS/JS - no external assets, no frameworks).
  *
  * Behavior contract (mirrors the firmware's honesty rules):
- *  - "PC state" shows the firmware's state + source + note; service
- *    reachability is displayed separately and an unreachable agent never
- *    implies "PC is off";
- *  - MOCK/MIXED/HARDWARE mode and the agent dry-run flag are always visible;
- *  - commands are disabled while another command is active;
- *  - PWR_RESET asks for confirmation; FORCE_POWER_OFF requires typing the
- *    command name (inline modal - no JS confirm/alert);
+ *  - PC state shows the firmware's state + source + note; the device has no
+ *    power-sensing input, so it is usually reported as unknown;
+ *  - every command drives the real motherboard front-panel GPIO;
+ *  - commands are disabled only while another command is active (the hardware
+ *    cooldown runs in the background and is reported, not enforced by locking
+ *    the buttons);
+ *  - POWER_ON and WAKE_UP ask for confirmation; PWR_RESET requires typing the
+ *    command name; FORCE_POWER_OFF requires typing the command name (inline
+ *    modal - no JS confirm/alert);
  *  - status polling backs off on failure and pauses while the tab is hidden;
  *  - the USB HID login panel is explicit-submit only, clears the password
  *    field immediately, never persists it, and reports only that keystrokes
@@ -78,28 +80,24 @@ footer{margin:22px 0 8px;font-size:.72em;color:#484f58;text-align:center;line-he
 <div class="hdr">
  <div><h1>PC Control</h1><div class="sub" id="hdrDev">&hellip;</div></div>
  <div class="badges">
-  <span class="badge mode" id="bMode">MODE ?</span>
   <span class="badge" id="bNet">TAILNET ?</span>
-  <span class="badge" id="bAgent">AGENT ?</span>
   <a class="badge" href="/pc/settings" style="text-decoration:none">&#9881; Settings</a>
+  <a class="badge" href="/pc/security" style="text-decoration:none">&#128274; Security</a>
  </div>
 </div>
 <div class="wrap">
  <div id="authBanner" class="banner warn hidden"><span id="authMsg"></span><button class="btn ghost" id="btnTokOpen">Set token</button></div>
  <div id="staleBanner" class="banner warn hidden"><span>&#9888; Status is not updating (last refresh failed). Values may be stale.</span></div>
  <div class="cards">
-  <div class="card"><div class="k">Windows agent</div><div class="v" id="vSvc">&hellip;</div><div class="d" id="dSvc"></div></div>
   <div class="card"><div class="k">PC state</div><div class="v" id="vPc">&hellip;</div><div class="d" id="dPc"></div></div>
   <div class="card"><div class="k">ESP32 / tailnet</div><div class="v" id="vEsp">&hellip;</div><div class="d" id="dEsp"></div></div>
   <div class="card"><div class="k">Last command</div><div class="v" id="vLast">&ndash;</div><div class="d" id="dLast"></div></div>
  </div>
  <div class="active hidden" id="activeBox">
   <div><span id="activeSpin"></span><span id="activeText"></span></div>
-  <button class="btn ghost hidden" id="btnCancel">Cancel</button>
  </div>
  <h2>Commands</h2>
  <div class="grid" id="cmdGrid"></div>
- <p class="hint" id="modeHint"></p>
  <p class="hint" id="cdHint"></p>
  <h2>USB HID login</h2>
  <div class="card">
@@ -115,8 +113,8 @@ footer{margin:22px 0 8px;font-size:.72em;color:#484f58;text-align:center;line-he
  </div>
  <h2>Log</h2>
  <ul id="logList"></ul>
- <footer>MicroLink PC Control &middot; MOCK mode performs no physical action and no real Windows operation.<br>
- Service unreachable does NOT mean the PC is off - it only means the agent could not be reached.</footer>
+ <footer>MicroLink PC Control &middot; every command drives the motherboard front-panel inputs.<br>
+ The device has no power-sensing input, so PC state is usually unknown.</footer>
 </div>
 <div class="modal hidden" id="modal"><div class="modal-box">
  <h3 id="mTitle"></h3><p id="mBody"></p>
@@ -134,12 +132,10 @@ footer{margin:22px 0 8px;font-size:.72em;color:#484f58;text-align:center;line-he
 'use strict';
 const $ = function(id){ return document.getElementById(id); };
 const CMDS = [
- {id:'POWER_ON', label:'Power On', ic:'\u23FB', desc:'Start the PC (PWR_SW pulse)', route:'hardware', confirm:null, cancellable:false},
- {id:'WAKE_UP', label:'Wake Up', ic:'\u2600', desc:'Short PWR_SW press (wake)', route:'hardware', confirm:null, cancellable:false},
- {id:'SHUTDOWN', label:'Shut Down', ic:'\u23FC', desc:'Graceful shutdown via Windows agent', route:'windows', confirm:'soft', cancellable:true},
- {id:'RESTART', label:'Restart', ic:'\u21BB', desc:'Graceful restart via Windows agent', route:'windows', confirm:'soft', cancellable:true},
- {id:'PWR_RESET', label:'PWR Reset', ic:'\u26A1', desc:'Hardware RESET_SW pulse', route:'hardware', confirm:'hard', cancellable:false},
- {id:'FORCE_POWER_OFF', label:'Force Power Off', ic:'\u26A0', desc:'Hold PWR_SW (frozen PC)', route:'hardware', confirm:'strong', cancellable:false}
+ {id:'POWER_ON', label:'Power On', ic:'\u23FB', desc:'Start the PC (PWR_SW pulse)', confirm:'soft'},
+ {id:'WAKE_UP', label:'Wake Up', ic:'\u2600', desc:'Short PWR_SW press (wake)', confirm:'soft'},
+ {id:'PWR_RESET', label:'PWR Reset', ic:'\u26A1', desc:'Hardware RESET_SW pulse', confirm:'hard'},
+ {id:'FORCE_POWER_OFF', label:'Force Power Off', ic:'\u26A0', desc:'Hold PWR_SW (frozen PC)', confirm:'strong'}
 ];
 let st = null, fails = 0, pollTimer = null, busy = false;
 let memTok = '';
@@ -194,37 +190,16 @@ function buildButtons(){
 function commandDisabled(c){
   if (busy) return 'another request is in flight';
   if (st && st.active_command) return 'a command is already running';
-  if (c.route === 'hardware' && st && st.hw_cooldown_ms > 0) {
-    return 'hardware cooldown - unlocks in ~' + Math.ceil(st.hw_cooldown_ms / 1000) + ' s';
-  }
-  if (c.route === 'windows' && st && st.mode !== 'MOCK') {
-    if (!st.esp32 || st.esp32.state !== 'CONNECTED') return 'tailnet not connected';
-    if (st.service && st.service.reachable === false) return 'Windows agent unreachable';
-  }
   return null;
 }
 function render(s){
   st = s;
   const esp = s.esp32 || {};
   $('hdrDev').textContent = (esp.hostname || '') + (esp.vpn_ip ? '  (' + esp.vpn_ip + ')' : '');
-  $('bMode').textContent = 'MODE ' + s.mode;
   const bn = $('bNet');
   const espOk = esp.state === 'CONNECTED';
   bn.textContent = espOk ? 'TAILNET ok' : ('TAILNET ' + (esp.state || '?'));
   bn.className = 'badge ' + (espOk ? 'ok' : 'mid');
-  const svc = s.service || {};
-  const ba = $('bAgent');
-  ba.textContent = 'AGENT ' + (svc.reachable ? 'ok' : (svc.state || '?')) + (svc.agent_dry_run ? ' (dry-run)' : '');
-  ba.className = 'badge ' + (svc.reachable ? 'ok' : (svc.state === 'offline' ? 'bad' : 'mid'));
-
-  const vSvc = $('vSvc');
-  vSvc.textContent = svc.reachable ? 'reachable' : (svc.state || 'unknown');
-  vSvc.className = 'v ' + (svc.reachable ? 'v-ok' : (svc.state === 'offline' ? 'v-bad' : 'v-mid'));
-  let sd = 'last ok: ' + fmtAge(svc.last_ok_age_s) + '  |  ' + (svc.host || '?') + ':' + (svc.port || '?');
-  if (svc.agent_dry_run) sd += '  |  DRY-RUN (no real action)';
-  if (svc.last_error) sd += '  |  ' + (svc.state === 'unknown' ? 'note: ' : 'last error: ') + svc.last_error;
-  $('dSvc').textContent = sd;
-
   const pc = s.pc || {};
   const vPc = $('vPc');
   vPc.textContent = pc.state || 'unknown';
@@ -239,7 +214,7 @@ function render(s){
 
   const lc = s.last_command;
   if (lc) {
-    $('vLast').textContent = lc.command + ': ' + lc.state + (lc.simulated ? ' (simulated)' : '');
+    $('vLast').textContent = lc.command + ': ' + lc.state;
     $('dLast').textContent = (lc.detail || lc.error || '') + '  (' + fmtAge(lc.age_s) + ')';
   } else {
     $('vLast').textContent = 'none';
@@ -253,13 +228,8 @@ function render(s){
     $('activeSpin').innerHTML = (ac.state === 'accepted' || ac.state === 'running')
       ? '<span class="spin"></span>' : '';
     $('activeText').textContent = ac.command + ' - ' + ac.state +
-      (ac.simulated ? ' (simulated)' : '') + ' - ' + (ac.detail || '') +
+      ' - ' + (ac.detail || '') +
       '  [' + ac.request_id + ']';
-    const cdef = CMDS.find(function(c){ return c.id === ac.command; });
-    const canCal = cdef && cdef.cancellable && (ac.state === 'accepted' || ac.state === 'running');
-    const bc = $('btnCancel');
-    bc.classList.toggle('hidden', !canCal);
-    bc.dataset.rid = ac.request_id;
   } else {
     box.classList.add('hidden');
   }
@@ -276,15 +246,9 @@ function render(s){
     ab.classList.add('hidden');
   }
 
-  const hints = {
-    MOCK: 'MODE: MOCK - every command is simulated inside the firmware. Nothing physical happens and no real Windows operation is requested.',
-    MIXED: 'MODE: MIXED - POWER_ON / WAKE_UP / PWR_RESET / FORCE_POWER_OFF stay simulated; SHUTDOWN / RESTART are sent to the Windows agent (respect its dry-run flag).',
-    HARDWARE: 'MODE: HARDWARE - real routing. Verify the circuit and the agent before using these controls.'
-  };
-  $('modeHint').textContent = hints[s.mode] || '';
   const cdms = (s.hw_cooldown_ms && s.hw_cooldown_ms > 0) ? s.hw_cooldown_ms : 0;
   $('cdHint').textContent = cdms > 0
-    ? ('Hardware cooldown: ' + Math.ceil(cdms / 1000) + ' s remaining - hardware buttons unlock automatically.')
+    ? ('Cooldown: ' + Math.ceil(cdms / 1000) + ' s remaining - a press now is refused until it expires.')
     : '';
 
   renderHid(s.hid || {});
@@ -325,18 +289,19 @@ function onCommand(c){
   if (busy || (st && st.active_command)) return;
   if (c.confirm === 'strong') {
     openModal('Force power off?',
-      'This holds the motherboard PWR_SW input to force a frozen PC off. It bypasses Windows and can cause data loss. In MOCK mode it is simulated only.<br><br>Type <code>' + c.id + '</code> to enable the button.',
+      'This holds the motherboard PWR_SW input to force a frozen PC off. It bypasses the operating system and can cause data loss. This is a real hardware action.<br><br>Type <code>' + c.id + '</code> to enable the button.',
       c.id, function(){ doSubmit(c, c.id); }, 'Force power off');
   } else if (c.confirm === 'hard') {
     openModal('PWR Reset?',
-      'This pulses the motherboard RESET_SW input - an immediate hardware reset, not a Windows restart. Unsaved work will be lost. In MOCK mode it is simulated only.',
+      'This pulses the motherboard RESET_SW input - an immediate hardware reset. Unsaved work will be lost. This is a real hardware action.<br><br>Type <code>' + c.id + '</code> to enable the button.',
       c.id, function(){ doSubmit(c, c.id); }, 'Pulse reset');
   } else if (c.confirm === 'soft') {
-    openModal(c.label + '?',
-      'This requests a graceful Windows ' + (c.id === 'SHUTDOWN' ? 'shutdown' : 'restart') + ' from the agent. It can be cancelled while pending.',
-      null, function(){ doSubmit(c, null); }, c.label);
+    var msg = (c.id === 'POWER_ON')
+      ? 'This pulses the motherboard PWR_SW input to start the PC. Confirm to avoid an accidental start.'
+      : 'This pulses the motherboard PWR_SW input to wake the PC from sleep. Confirm to avoid an accidental press.';
+    openModal(c.label + '?', msg, null, function(){ doSubmit(c, c.id); }, c.label);
   } else {
-    doSubmit(c, null);
+    doSubmit(c, c.id);
   }
 }
 
@@ -360,6 +325,9 @@ async function doSubmit(c, confirmValue){
     } else if (r.status === 401) {
       log(c.id + ' rejected: ' + (j.error || r.status) + ' - set the API token');
       openTok();
+    } else if (r.status === 409 && j.error === 'cooldown') {
+      const left = Math.ceil((j.retry_after_ms || 0) / 1000);
+      log(c.id + ' not sent - cooldown active, wait ' + left + ' s before pressing again');
     } else {
       let m = c.id + ' rejected (' + r.status + '): ' + (j.error || r.error || '?');
       if (j.detail) m += ' - ' + j.detail;
@@ -374,22 +342,6 @@ async function doSubmit(c, confirmValue){
   refresh();
 }
 
-async function doCancel(){
-  const rid = $('btnCancel').dataset.rid;
-  if (!rid) return;
-  try {
-    const r = await fetchJson('/api/v1/commands/' + encodeURIComponent(rid) + '/cancel', { method: 'POST' });
-    const j = r.json || {};
-    if (j.cancelled) {
-      log('[' + rid + '] cancelled');
-    } else {
-      log('[' + rid + '] cancel not possible (' + r.status + '): ' + (j.detail || j.reason || j.error || '?'));
-    }
-  } catch (e) {
-    log('cancel request failed: ' + e);
-  }
-  refresh();
-}
 function renderHid(h){
   h = h || {};
   const en = !!h.enabled, mo = !!h.mounted;
@@ -522,7 +474,6 @@ applyHashToken();
 window.addEventListener('hashchange', function(){ if (applyHashToken()) refresh(); });
 $('hidGo').addEventListener('click', hidSubmit);
 $('hidCancel').addEventListener('click', hidCancel);
-$('btnCancel').addEventListener('click', doCancel);
 buildButtons();
 refresh();
 
@@ -532,10 +483,10 @@ refresh();
 
 /**
  * @file (continued in pc_web.h)
- * @brief Device Settings page (/pc/settings): Windows PC connection, agent
- *        token, per-function permissions, GPIO mapping (pin + active level)
- *        and press timings. All changes are saved through POST /api/v1/config
- *        (NVS-backed) and enforced firmware-side.
+ * @brief Device Settings page (/pc/settings): per-function permissions, GPIO
+ *        mapping (pin + active level) and press timings. All changes are saved
+ *        through POST /api/v1/config (NVS-backed) and enforced firmware-side.
+ *        The admin login and the API token are managed on /pc/security.
  */
 
 static const char PCCTL_SETTINGS_HTML[] = R"PCSET(<!DOCTYPE html>
@@ -574,7 +525,7 @@ footer{margin:22px 0 8px;font-size:.72em;color:#484f58;text-align:center;line-he
 </style></head><body>
 <div class="hdr">
  <div><h1>PC Control - Settings</h1><div class="sub" id="hdrDev">&hellip;</div></div>
- <div class="badges"><a class="badge" href="/pc">&larr; Control page</a></div>
+ <div class="badges"><a class="badge" href="/pc">&larr; Control page</a><a class="badge" href="/pc/security">&#128274; Security</a></div>
 </div>
 <div class="wrap">
  <div id="authBanner" class="banner warn hidden"><span id="authMsg"></span></div>
@@ -582,20 +533,6 @@ footer{margin:22px 0 8px;font-size:.72em;color:#484f58;text-align:center;line-he
  <div class="card">
   <div class="k">API token (this browser)</div>
   <div class="row"><input class="txt" id="apiTok" placeholder="paste API token (saving settings requires it)" style="max-width:420px"><button class="btn" id="apiTokSave">Save</button><span class="hint" id="apiTokMsg"></span></div>
- </div>
-
- <h2>Windows PC connection</h2>
- <div class="card">
-  <div class="frm"><label>Tailscale IP or hostname (no LAN fallback is ever used)</label><input class="txt" id="pcHost" placeholder="100.x.y.z or name"></div>
-  <div class="frm"><label>Service port</label><input class="txt" id="pcPort" type="number" min="1" max="65535"></div>
-  <div class="frm"><label>HTTP timeout (ms, 1000-30000)</label><input class="txt" id="pcTimeout" type="number" min="1000" max="30000"></div>
- </div>
-
- <h2>Agent token (ESP32 &rarr; Windows service)</h2>
- <div class="card">
-  <div class="d" id="agentTokState">&hellip;</div>
-  <div class="row" style="margin-top:8px"><input class="txt" id="agentTok" placeholder="new token value" style="max-width:420px"><button class="btn" id="agentTokSave">Set token</button><button class="btn ghost" id="agentTokClear">Clear token</button></div>
-  <div class="hint">Stored in NVS; the value is never displayed again and never logged.</div>
  </div>
 
  <h2>Function permissions (independent)</h2>
@@ -616,24 +553,27 @@ footer{margin:22px 0 8px;font-size:.72em;color:#484f58;text-align:center;line-he
 
  <div class="row" style="margin-top:14px">
   <button class="btn" id="saveAll">Save settings</button>
-  <button class="btn ghost" id="testConn">Test connection</button>
  </div>
  <p class="hint" id="saveMsg"></p>
- <p class="hint" id="testMsg">No connection test yet.</p>
+ <h2>Device</h2>
+ <div class="card">
+  <div class="d">Restart the ESP32 firmware. WiFi, the Tailnet identity, the GPIO mapping, the login and the API token are all kept - this page stops responding for a few seconds.</div>
+  <div class="row" style="margin-top:10px"><button class="btn ghost" id="rebootBtn">Reset Device</button><span class="hint" id="rebootMsg" style="margin:0"></span></div>
+ </div>
+
+
 
  <h2>Log</h2><ul id="logList"></ul>
- <footer>Changes are validated and enforced in firmware (NVS-backed); dry-run/MOCK modes still apply.<br>
- Service unreachable does NOT mean the PC is off.</footer>
+ <footer>Changes are validated and enforced in firmware (NVS-backed); commands drive the real GPIO outputs.<br>
+ The device has no power-sensing input, so PC state is usually unknown.</footer>
 </div>
 <script>
 'use strict';
 const $ = function(id){ return document.getElementById(id); };
-const FUNCS = ['POWER_ON','WAKE_UP','SHUTDOWN','RESTART','PWR_RESET','FORCE_POWER_OFF'];
+const FUNCS = ['POWER_ON','WAKE_UP','PWR_RESET','FORCE_POWER_OFF'];
 const FUNC_DESC = {
   POWER_ON: 'short PWR_SW press (start the PC)',
   WAKE_UP: 'short PWR_SW press (wake)',
-  SHUTDOWN: 'graceful shutdown via the Windows agent',
-  RESTART: 'graceful restart via the Windows agent',
   PWR_RESET: 'RESET_SW press (hardware reset)',
   FORCE_POWER_OFF: 'long PWR_SW hold (frozen PC)'
 };
@@ -701,13 +641,7 @@ function buildGpioRows(){
   });
 }
 function render(){
-  $('hdrDev').textContent = cfg.pc_host + ':' + cfg.pc_port;
-  $('pcHost').value = cfg.pc_host;
-  $('pcPort').value = cfg.pc_port;
-  $('pcTimeout').value = cfg.timeout_ms;
-  $('agentTokState').textContent = cfg.token_set
-    ? 'Agent token: configured (hidden). Paste a new value below to replace it.'
-    : 'Agent token: NOT configured - Windows commands will fail authentication.';
+  $('hdrDev').textContent = 'device settings';
   $('shortRange').textContent = '(' + cfg.short_press_min_ms + '-' + cfg.short_press_max_ms + ' ms)';
   $('longRange').textContent = '(' + cfg.long_press_min_ms + '-' + cfg.long_press_max_ms + ' ms)';
   $('shortMs').value = cfg.short_press_ms;
@@ -736,23 +670,6 @@ function render(){
     const lvl = $('l-' + name);
     if (lvl) lvl.value = (cfg.gpio_levels && cfg.gpio_levels[name] === 'low') ? 'low' : 'high';
   });
-
-  if (cfg.last_test) {
-    $('testMsg').textContent = (cfg.last_test.reachable && cfg.last_test.authenticated)
-      ? 'Token accepted' : 'See last test below.';
-  }
-}
-function renderTest(){
-  const t = cfg && cfg.last_test;
-  if (!t) { $('testMsg').textContent = 'No connection test yet.'; return; }
-  const age = Math.round(t.age_s);
-  if (t.reachable && t.authenticated) {
-    $('testMsg').textContent = 'TEST OK (' + age + ' s ago): service reachable, authentication accepted.';
-  } else if (t.reachable) {
-    $('testMsg').textContent = 'TEST (' + age + ' s ago): service reachable but NOT authenticated (HTTP ' + t.http_status + (t.error ? ': ' + t.error : '') + ').';
-  } else {
-    $('testMsg').textContent = 'TEST (' + age + ' s ago): service NOT reachable' + (t.error ? ' (' + t.error + ')' : '') + '.';
-  }
 }
 async function load(){
   const rc = await fetchJson('/api/v1/config');
@@ -777,17 +694,13 @@ async function saveAll(){
     levels[n] = (l && l.value === 'low') ? 'low' : 'high';
   });
   const body = {
-    pc_host: $('pcHost').value.trim(),
-    pc_port: parseInt($('pcPort').value, 10),
-    timeout_ms: parseInt($('pcTimeout').value, 10),
     functions: functions,
     gpios: gpios,
     gpio_levels: levels,
     short_press_ms: parseInt($('shortMs').value, 10),
     long_press_ms: parseInt($('longMs').value, 10)
   };
-  if (!body.pc_host || isNaN(body.pc_port) || isNaN(body.timeout_ms) ||
-      isNaN(body.short_press_ms) || isNaN(body.long_press_ms)) {
+  if (isNaN(body.short_press_ms) || isNaN(body.long_press_ms)) {
     $('saveMsg').textContent = 'Fill every field with a valid value first.';
     return;
   }
@@ -799,7 +712,6 @@ async function saveAll(){
   if (r.status === 200 && r.json && r.json.ok) {
     cfg = r.json;
     render();
-    renderTest();
     $('saveMsg').textContent = 'Saved to NVS and applied.';
     log('settings saved');
   } else if (r.status === 401) {
@@ -808,40 +720,6 @@ async function saveAll(){
     $('saveMsg').textContent = 'Save failed (' + r.status + '): ' +
       ((r.json && (r.json.detail || r.json.error)) || r.error || '?');
   }
-}
-async function tokenSave(clear){
-  const body = clear ? { clear: true } : { token: sanitizeTok($('agentTok').value) };
-  if (!clear && !body.token) { $('saveMsg').textContent = 'Token input is empty.'; return; }
-  const r = await fetchJson('/api/v1/config/token', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  if (r.status === 200) {
-    $('agentTok').value = '';
-    await load();
-    $('saveMsg').textContent = clear ? 'Agent token cleared.' : 'Agent token updated.';
-    log('agent token ' + (clear ? 'cleared' : 'updated'));
-  } else if (r.status === 401) {
-    $('saveMsg').textContent = 'Rejected: API token missing or invalid.';
-  } else {
-    $('saveMsg').textContent = 'Token update failed (' + r.status + '): ' +
-      ((r.json && (r.json.detail || r.json.error)) || '?');
-  }
-}
-async function testConn(){
-  $('testMsg').textContent = 'Testing...';
-  const r = await fetchJson('/api/v1/config/test', { method: 'POST' });
-  if (r.status !== 202) {
-    $('testMsg').textContent = 'Test not started (' + r.status + '): ' +
-      ((r.json && (r.json.error || r.json.detail)) || r.error || '?');
-    return;
-  }
-  for (let i = 0; i < 10; i++) {
-    await new Promise(function(res){ setTimeout(res, 900); });
-    await load();
-    if (cfg.last_test && cfg.last_test.age_s < 5) break;
-  }
-  renderTest();
 }
 $('apiTokSave').addEventListener('click', async function(){
   const v = sanitizeTok($('apiTok').value);
@@ -863,17 +741,51 @@ $('apiTokSave').addEventListener('click', async function(){
     $('apiTokMsg').textContent = 'Could not verify (HTTP ' + r.status + ').';
   }
 });
-$('agentTokSave').addEventListener('click', function(){ tokenSave(false); });
-$('agentTokClear').addEventListener('click', function(){ tokenSave(true); });
+/* Device reset (restart the firmware). No confirm()/alert() - captive-portal
+ * webviews block JS dialogs - so the button uses a two-step inline confirm:
+ * click once to arm ("Confirm reset?"), click again within 4 s to fire. */
+async function rebootNow(){
+  $('rebootMsg').textContent = 'Restarting...';
+  const r = await fetchJson('/api/v1/device/reboot', { method: 'POST' });
+  if (r.status === 200 && r.json && r.json.rebooting) {
+    $('rebootMsg').textContent = 'Device is restarting - this page stops responding for a few seconds.';
+    log('device reset requested');
+  } else if (r.status === 401) {
+    $('rebootMsg').textContent = 'Rejected: API token missing or invalid - set it in the top card.';
+  } else {
+    $('rebootMsg').textContent = 'Reset failed (' + r.status + '): ' +
+      ((r.json && (r.json.detail || r.json.error)) || r.error || '?');
+  }
+}
+function doReboot(){
+  const b = $('rebootBtn');
+  if (b.dataset.armed === '1') {
+    b.dataset.armed = '';
+    b.textContent = 'Reset Device';
+    rebootNow();
+    return;
+  }
+  b.dataset.armed = '1';
+  b.textContent = 'Confirm reset?';
+  $('rebootMsg').textContent = 'Click again within 4 s to restart the device.';
+  setTimeout(function(){
+    if (b.dataset.armed === '1') {
+      b.dataset.armed = '';
+      b.textContent = 'Reset Device';
+      $('rebootMsg').textContent = '';
+    }
+  }, 4000);
+}
+$('rebootBtn').addEventListener('click', doReboot);
+
 $('saveAll').addEventListener('click', saveAll);
-$('testConn').addEventListener('click', testConn);
 applyHashToken();
 if (!tok()) {
   $('authBanner').classList.remove('hidden');
   $('authMsg').textContent = 'No API token in this browser yet - paste it above (or open /pc/settings#t=TOKEN); saving requires it.';
 }
 buildGpioRows();
-load().then(renderTest);
+load();
 </script>
 </body></html>
 )PCSET";

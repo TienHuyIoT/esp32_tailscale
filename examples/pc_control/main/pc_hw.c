@@ -1,51 +1,43 @@
 /**
- * @file pc_hw_gpio.c
- * @brief Real GPIO hardware implementation (PWR_SW / RESET_SW pulses).
+ * @file pc_hw.c
+ * @brief Real GPIO hardware layer (PWR_SW / RESET_SW pulses).
  *
- * Compiled only with CONFIG_PCCTL_ENABLE_HW_GPIO=y, which must stay off
- * until an electrically verified interface exists between the ESP32 and the
- * motherboard front-panel pins (transistor / optocoupler / isolated relay).
- * Never wire a GPIO straight to PWR_SW# / RESET_SW#.
- *
- * Boot/reset safety: pins come from the runtime Settings UI (NVS) and are
- * driven ONLY on demand inside execute() - nothing is touched at boot, so a
- * reset or reboot cannot actuate anything. An ESP32 reboot mid-pulse simply
- * ends the pulse (the pin returns to its default state). An external pulldown
- * in the interface circuit is still recommended.
+ * This is the only hardware implementation - there is no simulation mode.
+ * Pins come from the runtime Settings UI (NVS) and are driven ONLY on demand
+ * inside pc_hw_execute() - nothing is touched at boot, so a reset or reboot
+ * cannot actuate anything. An ESP32 reboot mid-pulse simply ends the pulse
+ * (the pin returns to its default state). An external pull resistor in the
+ * interface circuit is still recommended.
  *
  * Assert level: "active HIGH" / "active LOW" is a runtime setting per output
  * (Settings UI, NVS) - the level driven to press the button; idle is the
  * opposite level. Default HIGH suits the typical transistor/optocoupler
  * stage into an active-low PWR_SW#/RESET_SW# - VERIFY the configured level
- * against your circuit before enabling this mode.
+ * against your circuit.
+ *
+ * Never wire a GPIO straight to PWR_SW# / RESET_SW#: use a transistor /
+ * optocoupler / isolated relay stage.
  */
-
-#include "sdkconfig.h"
-
-#if CONFIG_PCCTL_ENABLE_HW_GPIO
 
 #include "pc_hw.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "sdkconfig.h"
 #include <stdio.h>
 
-static const char *TAG = "pc_hw_gpio";
+static const char *TAG = "pc_hw";
 
-/* Legacy fixed levels are gone: assert/idle are derived per pulse from the
- * runtime "active HIGH/LOW" setting (pc_hw_params_t.active_high). */
-
-static esp_err_t gpio_init(void) {
+esp_err_t pc_hw_init(void) {
     /* Pins come from the runtime Settings UI (NVS) and are driven only on
-     * demand inside execute() - nothing is touched at boot. */
-    ESP_LOGW(TAG, "GPIO hardware mode compiled in - outputs are driven only "
-                  "on demand from the runtime pin mapping; verify the "
-                  "interface circuit before enabling FULL mode");
+     * demand inside pc_hw_execute() - nothing is touched at boot. */
+    ESP_LOGI(TAG, "GPIO outputs ready - driven only on demand from the "
+                  "runtime pin mapping (Settings UI)");
     return ESP_OK;
 }
 
-static uint32_t gpio_duration(pc_cmd_id_t id, const pc_hw_params_t *params) {
+uint32_t pc_hw_duration_ms(pc_cmd_id_t id, const pc_hw_params_t *params) {
     uint32_t pulse = (params && params->pulse_ms) ? params->pulse_ms : 300;
     if (pulse < 100) pulse = 100;
     if (pulse > 2000) pulse = 2000;
@@ -83,8 +75,8 @@ static esp_err_t pulse(int pin, uint32_t ms, bool active_high) {
     return ESP_OK;
 }
 
-static esp_err_t gpio_execute(pc_cmd_id_t id, const pc_hw_params_t *params,
-                              char *detail, size_t detail_len) {
+esp_err_t pc_hw_execute(pc_cmd_id_t id, const pc_hw_params_t *params,
+                        char *detail, size_t detail_len) {
     if (!params || params->gpio_pin < 0) {
         snprintf(detail, detail_len, "no GPIO configured for this function");
         return ESP_ERR_INVALID_STATE;
@@ -92,7 +84,7 @@ static esp_err_t gpio_execute(pc_cmd_id_t id, const pc_hw_params_t *params,
     int pin = params->gpio_pin;
     const bool active_high = params->active_high;
     const char *lvl = active_high ? "HIGH" : "LOW";
-    uint32_t dur = gpio_duration(id, params);
+    uint32_t dur = pc_hw_duration_ms(id, params);
     esp_err_t err;
     switch (id) {
     case PC_CMD_POWER_ON:
@@ -126,17 +118,3 @@ static esp_err_t gpio_execute(pc_cmd_id_t id, const pc_hw_params_t *params,
     }
     return err;
 }
-
-const pc_hw_ops_t pc_hw_gpio_ops = {
-    .name = "gpio",
-    .init = gpio_init,
-    .execute = gpio_execute,
-    .duration_ms = gpio_duration,
-};
-
-#else  /* !CONFIG_PCCTL_ENABLE_HW_GPIO */
-
-/* Keep the translation unit non-empty when the feature is compiled out. */
-typedef int pc_hw_gpio_disabled_t;
-
-#endif /* CONFIG_PCCTL_ENABLE_HW_GPIO */

@@ -1,8 +1,12 @@
 /**
  * @file pc_cmd.h
- * @brief PC-control command identifiers, routes and lifecycle states.
+ * @brief PC-control command identifiers and lifecycle states.
  *
- * Dependency-free (no ESP-IDF includes) so pc_state / pc_hw / pc_win_client /
+ * Every command is a hardware front-panel action (PWR_SW / RESET_SW). The
+ * former SHUTDOWN / RESTART software commands and their Windows-agent route
+ * were removed - the device only ever pulses the motherboard inputs.
+ *
+ * Dependency-free (no ESP-IDF includes) so pc_state / pc_hw /
  * pc_controller / pc_api can all share it cheaply.
  */
 
@@ -18,8 +22,6 @@ extern "C" {
 typedef enum {
     PC_CMD_POWER_ON = 0,
     PC_CMD_WAKE_UP,
-    PC_CMD_SHUTDOWN,
-    PC_CMD_RESTART,
     PC_CMD_PWR_RESET,
     PC_CMD_FORCE_POWER_OFF,
     PC_CMD_COUNT
@@ -39,17 +41,10 @@ typedef enum {
     PC_CMD_STATE_CANCELLED,
 } pc_cmd_state_t;
 
-typedef enum {
-    PC_CMD_ROUTE_HARDWARE = 0,  /* pc_hw abstraction (mock or GPIO) */
-    PC_CMD_ROUTE_WINDOWS,       /* Windows agent over the tailnet */
-} pc_cmd_route_t;
-
 typedef struct {
     pc_cmd_id_t id;
     const char *name;            /* exact API identifier, e.g. "POWER_ON" */
-    pc_cmd_route_t route;
     bool requires_confirm;       /* request must echo confirm == name */
-    bool cancellable;            /* may be cancelled before dispatch/confirm */
     const char *description;
 } pc_cmd_def_t;
 
@@ -61,9 +56,6 @@ const pc_cmd_def_t *pc_cmd_lookup(const char *name);
 
 /** Lower-case lifecycle state string for JSON/logs ("accepted", ...). */
 const char *pc_cmd_state_str(pc_cmd_state_t state);
-
-/** Route string for JSON ("hardware" / "windows"). */
-const char *pc_cmd_route_str(pc_cmd_route_t route);
 
 #ifdef __cplusplus
 }

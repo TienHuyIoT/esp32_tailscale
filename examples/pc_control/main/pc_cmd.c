@@ -1,18 +1,17 @@
 #include "pc_cmd.h"
 #include <string.h>
 
+/* Every remaining command is a hardware front-panel action and requires the
+ * caller to echo confirm == name (mis-press protection enforced firmware-side,
+ * not only in the UI). */
 static const pc_cmd_def_t s_defs[PC_CMD_COUNT] = {
-    { PC_CMD_POWER_ON, "POWER_ON", PC_CMD_ROUTE_HARDWARE, false, false,
-      "Pulse the motherboard PWR_SW input to power the PC on" },
-    { PC_CMD_WAKE_UP, "WAKE_UP", PC_CMD_ROUTE_HARDWARE, false, false,
-      "Wake a sleeping PC (short PWR_SW press via the configured GPIO)" },
-    { PC_CMD_SHUTDOWN, "SHUTDOWN", PC_CMD_ROUTE_WINDOWS, false, true,
-      "Graceful Windows shutdown via the PC agent (cancellable while pending)" },
-    { PC_CMD_RESTART, "RESTART", PC_CMD_ROUTE_WINDOWS, false, true,
-      "Graceful Windows restart via the PC agent (cancellable while pending)" },
-    { PC_CMD_PWR_RESET, "PWR_RESET", PC_CMD_ROUTE_HARDWARE, true, false,
+    { PC_CMD_POWER_ON, "POWER_ON", true,
+      "Pulse the motherboard PWR_SW input to power the PC on (confirmation required)" },
+    { PC_CMD_WAKE_UP, "WAKE_UP", true,
+      "Wake a sleeping PC (short PWR_SW press; confirmation required)" },
+    { PC_CMD_PWR_RESET, "PWR_RESET", true,
       "Pulse the motherboard RESET_SW input (hardware reset; confirmation required)" },
-    { PC_CMD_FORCE_POWER_OFF, "FORCE_POWER_OFF", PC_CMD_ROUTE_HARDWARE, true, false,
+    { PC_CMD_FORCE_POWER_OFF, "FORCE_POWER_OFF", true,
       "Hold PWR_SW to force a frozen PC off (strong confirmation required)" },
 };
 
@@ -40,6 +39,3 @@ const char *pc_cmd_state_str(pc_cmd_state_t state) {
     }
 }
 
-const char *pc_cmd_route_str(pc_cmd_route_t route) {
-    return (route == PC_CMD_ROUTE_WINDOWS) ? "windows" : "hardware";
-}

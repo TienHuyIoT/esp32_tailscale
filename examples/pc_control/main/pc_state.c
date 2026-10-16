@@ -43,29 +43,6 @@ void pc_state_get(pc_state_snapshot_t *out) {
     unlock();
 }
 
-void pc_state_set_service_unknown(const char *error) {
-    lock();
-    s_state.service = PC_SVC_UNKNOWN;
-    s_state.service_agent_dry_run = false;
-    copy_str(s_state.service_error, sizeof(s_state.service_error), error);
-    unlock();
-}
-
-void pc_state_set_service(pc_service_state_t st, bool agent_dry_run, const char *error) {
-    int64_t now = esp_timer_get_time();
-    lock();
-    s_state.service = st;
-    s_state.service_last_check_us = now;
-    s_state.service_agent_dry_run = (st == PC_SVC_ONLINE) ? agent_dry_run : false;
-    if (st == PC_SVC_ONLINE) {
-        s_state.service_last_ok_us = now;
-        s_state.service_error[0] = '\0';
-    } else if (error) {
-        copy_str(s_state.service_error, sizeof(s_state.service_error), error);
-    }
-    unlock();
-}
-
 void pc_state_set_power(pc_power_state_t p, const char *source, const char *note) {
     lock();
     s_state.power = p;
@@ -73,18 +50,6 @@ void pc_state_set_power(pc_power_state_t p, const char *source, const char *note
     copy_str(s_state.power_source, sizeof(s_state.power_source),
              source ? source : "none");
     copy_str(s_state.power_note, sizeof(s_state.power_note), note ? note : "");
-    unlock();
-}
-
-void pc_state_set_test(bool reachable, bool authenticated, int http_status,
-                       const char *error) {
-    lock();
-    s_state.test_valid = true;
-    s_state.test_at_us = esp_timer_get_time();
-    s_state.test_reachable = reachable;
-    s_state.test_authenticated = authenticated;
-    s_state.test_http_status = http_status;
-    copy_str(s_state.test_error, sizeof(s_state.test_error), error ? error : "");
     unlock();
 }
 
@@ -115,19 +80,6 @@ bool pc_state_active_update(const char *request_id, pc_cmd_state_t state,
         if (deadline_us_set > 0) s_state.active.deadline_us = deadline_us_set;
         if (detail) copy_str(s_state.active.detail, sizeof(s_state.active.detail), detail);
         if (error) copy_str(s_state.active.error, sizeof(s_state.active.error), error);
-        applied = true;
-    }
-    unlock();
-    return applied;
-}
-
-bool pc_state_active_set_simulated(const char *request_id, bool simulated) {
-    bool applied = false;
-    if (!request_id) return false;
-    lock();
-    if (s_state.active.state != PC_CMD_STATE_NONE &&
-        strcmp(s_state.active.request_id, request_id) == 0) {
-        s_state.active.simulated = simulated;
         applied = true;
     }
     unlock();
@@ -174,19 +126,9 @@ bool pc_state_find(const char *request_id, pc_cmd_slot_t *out) {
 
 const char *pc_power_state_str(pc_power_state_t p) {
     switch (p) {
-    case PC_PWR_ONLINE:        return "online";
-    case PC_PWR_OFFLINE:       return "offline";
-    case PC_PWR_SLEEPING:      return "sleeping";
-    case PC_PWR_SHUTTING_DOWN: return "shutting_down";
-    case PC_PWR_RESTARTING:    return "restarting";
-    default:                   return "unknown";
-    }
-}
-
-const char *pc_service_state_str(pc_service_state_t s) {
-    switch (s) {
-    case PC_SVC_ONLINE:  return "online";
-    case PC_SVC_OFFLINE: return "offline";
-    default:             return "unknown";
+    case PC_PWR_ONLINE:   return "online";
+    case PC_PWR_OFFLINE:  return "offline";
+    case PC_PWR_SLEEPING: return "sleeping";
+    default:              return "unknown";
     }
 }

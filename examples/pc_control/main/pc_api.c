@@ -5,26 +5,37 @@
  *
  * Routes:
  *   GET  /pc                          embedded control UI
- *   GET  /api/v1/status               firmware/service/PC state
+ *   GET  /pc/settings                 settings UI
+ *   GET  /pc/security                 login + API-token management UI
+ *   GET  /api/v1/status               firmware/PC state
  *   GET  /api/v1/commands             command list + availability
  *   POST /api/v1/commands             submit command (token required)
  *   GET  /api/v1/commands/{id}        command state
- *   POST /api/v1/commands/{id}/cancel cancel (token required)
  *   POST /api/v1/hid/login            type the password over USB HID
  *                                     (token required; RAM-only)
  *   POST /api/v1/hid/cancel           cancel the pre-typing ARM window
+ *   POST /api/v1/auth/login           admin login (sets a session cookie)
+ *   POST /api/v1/auth/logout          drop the session
+ *   GET  /api/v1/auth/status          login + API-token state
+ *   POST /api/v1/auth/credentials     change login (session required)
+ *   GET  /api/v1/auth/api-token       API-token state (session required)
+ *   POST /api/v1/auth/api-token       generate/set/clear the API token (session)
+ *   POST /api/v1/device/reboot        restart the ESP32 (token required; all
+ *                                     configuration is kept)
  *
- * Mutations require X-PC-Token (or Authorization: Bearer) to match
- * CONFIG_PCCTL_API_TOKEN. Plain HTTP is acceptable only because traffic
- * stays inside the WireGuard tunnel; the token still gates every mutation
- * (tailnet membership alone is not treated as authorization).
+ * Mutations require X-PC-Token (or Authorization: Bearer) to match the runtime
+ * API token stored in NVS, falling back to CONFIG_PCCTL_API_TOKEN. Plain HTTP
+ * is acceptable only because traffic stays inside the WireGuard tunnel; the
+ * token still gates every mutation (tailnet membership alone is not treated as
+ * authorization).
  */
 
 #include "pc_api.h"
 #include "pc_web.h"
+#include "pc_security_web.h"
 #include "pc_controller.h"
 #include "pc_config.h"
-#include "pc_win_client.h"
+#include "pc_auth.h"
 #include "pc_state.h"
 #include "pc_cmd.h"
 #include "pc_hid.h"
@@ -35,6 +46,8 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_netif.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "cJSON.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -142,8 +155,8 @@ static bool get_presented_token(httpd_req_t *req, char *buf, size_t len) {
 
 /* Gate every mutation. Fills *status and *error on rejection. */
 static bool authorize_mutation(httpd_req_t *req, const char **status, const char **error) {
-    const char *configured = CONFIG_PCCTL_API_TOKEN;
-    if (!configured || configured[0] == '\0') {
+    char configured[PC_AUTH_TOKEN_MAX + 1];
+    if (!pc_auth_api_token(configured, sizeof(configured))) {
 #ifdef CONFIG_PCCTL_ALLOW_NO_TOKEN
         return true;
 #else
@@ -179,7 +192,6 @@ static cJSON *slot_to_json(const pc_cmd_slot_t *s) {
     cJSON_AddNumberToObject(o, "age_s", (double)(now - s->created_us) / 1e6);
     cJSON_AddNumberToObject(o, "duration_ms",
                             (double)(s->updated_us - s->created_us) / 1000.0);
-    cJSON_AddBoolToObject(o, "simulated", s->simulated);
     if (s->detail[0]) cJSON_AddStringToObject(o, "detail", s->detail);
     if (s->error[0]) cJSON_AddStringToObject(o, "error", s->error);
     return o;
@@ -201,7 +213,6 @@ static esp_err_t handler_status(httpd_req_t *req) {
     cJSON_AddStringToObject(fw, "name", "microlink_pc_control");
     cJSON_AddStringToObject(fw, "version", "0.1.0");
     cJSON_AddNumberToObject(fw, "uptime_s", (double)(esp_timer_get_time() / 1000000));
-    cJSON_AddStringToObject(json, "mode", pc_controller_mode_str());
 
     cJSON *esp = cJSON_AddObjectToObject(json, "esp32");
     if (ml) {
@@ -230,27 +241,6 @@ static esp_err_t handler_status(httpd_req_t *req) {
     cJSON_AddStringToObject(esp, "wifi_ip", lan);
     cJSON_AddNumberToObject(esp, "free_heap", esp_get_free_heap_size());
 
-    cJSON *svc = cJSON_AddObjectToObject(json, "service");
-    cJSON_AddStringToObject(svc, "state", pc_service_state_str(snap.service));
-    cJSON_AddBoolToObject(svc, "reachable", snap.service == PC_SVC_ONLINE);
-    int64_t now = esp_timer_get_time();
-    if (snap.service_last_ok_us) {
-        cJSON_AddNumberToObject(svc, "last_ok_age_s",
-                                (double)(now - snap.service_last_ok_us) / 1e6);
-    } else {
-        cJSON_AddNullToObject(svc, "last_ok_age_s");
-    }
-    if (snap.service_last_check_us) {
-        cJSON_AddNumberToObject(svc, "last_check_age_s",
-                                (double)(now - snap.service_last_check_us) / 1e6);
-    }
-    cJSON_AddStringToObject(svc, "last_error", snap.service_error);
-    pc_config_snapshot_t cfg;
-    pc_config_get(&cfg);
-    cJSON_AddStringToObject(svc, "host", cfg.host);
-    cJSON_AddNumberToObject(svc, "port", cfg.port);
-    cJSON_AddBoolToObject(svc, "agent_dry_run", snap.service_agent_dry_run);
-
     cJSON *pc = cJSON_AddObjectToObject(json, "pc");
     cJSON_AddStringToObject(pc, "state", pc_power_state_str(snap.power));
     cJSON_AddStringToObject(pc, "source", snap.power_source);
@@ -267,23 +257,13 @@ static esp_err_t handler_status(httpd_req_t *req) {
         cJSON_AddNullToObject(json, "last_command");
     }
 
-    cJSON_AddNumberToObject(json, "poll_interval_s", CONFIG_PCCTL_POLL_INTERVAL_S);
     cJSON_AddNumberToObject(json, "hw_cooldown_ms", pc_controller_hw_cooldown_remaining_ms());
 
-    if (snap.test_valid) {
-        cJSON *t = cJSON_AddObjectToObject(json, "last_test");
-        cJSON_AddNumberToObject(t, "age_s", (double)(now - snap.test_at_us) / 1e6);
-        cJSON_AddBoolToObject(t, "reachable", snap.test_reachable);
-        cJSON_AddBoolToObject(t, "authenticated", snap.test_authenticated);
-        cJSON_AddNumberToObject(t, "http_status", snap.test_http_status);
-        if (snap.test_error[0]) cJSON_AddStringToObject(t, "error", snap.test_error);
-    } else {
-        cJSON_AddNullToObject(json, "last_test");
-    }
-
     cJSON *auth = cJSON_AddObjectToObject(json, "auth");
-    bool configured = CONFIG_PCCTL_API_TOKEN[0] != '\0';
+    char token[PC_AUTH_TOKEN_MAX + 1];
+    bool configured = pc_auth_api_token(token, sizeof(token));
     cJSON_AddBoolToObject(auth, "token_configured", configured);
+    cJSON_AddBoolToObject(auth, "token_custom", pc_auth_api_token_overridden());
 #ifdef CONFIG_PCCTL_ALLOW_NO_TOKEN
     cJSON_AddBoolToObject(auth, "mutations_allowed", true);
 #else
@@ -310,7 +290,6 @@ static esp_err_t handler_get_commands(httpd_req_t *req) {
     cJSON *json = cJSON_CreateObject();
     if (!json) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
     cJSON_AddBoolToObject(json, "ok", true);
-    cJSON_AddStringToObject(json, "mode", pc_controller_mode_str());
 
     cJSON *arr = cJSON_AddArrayToObject(json, "commands");
     for (int i = 0; i < PC_CMD_COUNT && arr; i++) {
@@ -324,9 +303,7 @@ static esp_err_t handler_get_commands(httpd_req_t *req) {
         cJSON_AddStringToObject(c, "id", def->name);
         cJSON_AddBoolToObject(c, "available", available);
         if (!available && reason) cJSON_AddStringToObject(c, "unavailable_reason", reason);
-        cJSON_AddStringToObject(c, "route", pc_cmd_route_str(def->route));
         cJSON_AddBoolToObject(c, "requires_confirm", def->requires_confirm);
-        cJSON_AddBoolToObject(c, "cancellable", def->cancellable);
         cJSON_AddStringToObject(c, "description", def->description);
         cJSON_AddItemToArray(arr, c);
     }
@@ -507,62 +484,6 @@ static esp_err_t handler_get_command_by_id(httpd_req_t *req) {
     return send_json_status(req, NULL, json);
 }
 
-static esp_err_t handler_post_cancel(httpd_req_t *req) {
-    const char *status = NULL, *error = NULL;
-    if (!authorize_mutation(req, &status, &error)) {
-        const char *detail =
-            (error && strcmp(error, "api_token_not_configured") == 0)
-                ? "set CONFIG_PCCTL_API_TOKEN (sdkconfig.credentials or menuconfig)"
-                : "send X-PC-Token or Authorization: Bearer";
-        return send_error(req, status, error, detail);
-    }
-
-    const char *rest = strip_prefix(req->uri, "/api/v1/commands/");
-    const char *suffix = "/cancel";
-    size_t suffix_len = strlen(suffix);
-    size_t rest_len = rest ? strlen(rest) : 0;
-    if (!rest || rest_len <= suffix_len ||
-        strcmp(rest + rest_len - suffix_len, suffix) != 0) {
-        return send_error(req, "404 Not Found", "not_found",
-                          "expected /api/v1/commands/{id}/cancel");
-    }
-    size_t id_len = rest_len - suffix_len;
-    if (id_len == 0 || id_len > MAX_ID_LEN) {
-        return send_error(req, "400 Bad Request", "invalid_request_id", NULL);
-    }
-    char id[PC_ID_MAX];
-    memcpy(id, rest, id_len);
-    id[id_len] = '\0';
-
-    pc_cmd_slot_t slot;
-    memset(&slot, 0, sizeof(slot));
-    char reason[96] = "";
-    pc_cancel_status_t st = pc_controller_cancel(id, &slot, reason, sizeof(reason));
-    switch (st) {
-    case PC_CANCEL_OK:
-    case PC_CANCEL_FORWARDED: {
-        cJSON *json = cJSON_CreateObject();
-        if (!json) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
-        cJSON_AddBoolToObject(json, "ok", true);
-        cJSON_AddBoolToObject(json, "cancelled", st == PC_CANCEL_OK);
-        cJSON_AddItemToObject(json, "command", slot_to_json(&slot));
-        if (reason[0]) cJSON_AddStringToObject(json, "reason", reason);
-        return send_json_status(req, st == PC_CANCEL_OK ? NULL : "202 Accepted", json);
-    }
-    case PC_CANCEL_NOT_CANCELLABLE: {
-        cJSON *json = cJSON_CreateObject();
-        if (!json) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
-        cJSON_AddBoolToObject(json, "ok", false);
-        cJSON_AddStringToObject(json, "error", "not_cancellable");
-        cJSON_AddStringToObject(json, "state", pc_cmd_state_str(slot.state));
-        if (reason[0]) cJSON_AddStringToObject(json, "detail", reason);
-        return send_json_status(req, "409 Conflict", json);
-    }
-    default:
-        return send_error(req, "404 Not Found", "not_found", NULL);
-    }
-}
-
 /* ---------- configuration endpoints (device Settings UI) ---------- */
 
 static cJSON *config_to_json(void) {
@@ -572,10 +493,6 @@ static cJSON *config_to_json(void) {
     cJSON *json = cJSON_CreateObject();
     if (!json) return NULL;
     cJSON_AddBoolToObject(json, "ok", true);
-    cJSON_AddStringToObject(json, "pc_host", cfg.host);
-    cJSON_AddNumberToObject(json, "pc_port", cfg.port);
-    cJSON_AddNumberToObject(json, "timeout_ms", cfg.timeout_ms);
-    cJSON_AddBoolToObject(json, "token_set", cfg.token_set);
 
     cJSON *funcs = cJSON_AddObjectToObject(json, "functions");
     for (int i = 0; i < PC_CMD_COUNT; i++) {
@@ -621,19 +538,6 @@ static cJSON *config_to_json(void) {
         cJSON_AddItemToArray(allowed, cJSON_CreateNumber(pins[i]));
     }
 
-    pc_state_snapshot_t snap;
-    pc_state_get(&snap);
-    if (snap.test_valid) {
-        cJSON *t = cJSON_AddObjectToObject(json, "last_test");
-        int64_t now = esp_timer_get_time();
-        cJSON_AddNumberToObject(t, "age_s", (double)(now - snap.test_at_us) / 1e6);
-        cJSON_AddBoolToObject(t, "reachable", snap.test_reachable);
-        cJSON_AddBoolToObject(t, "authenticated", snap.test_authenticated);
-        cJSON_AddNumberToObject(t, "http_status", snap.test_http_status);
-        if (snap.test_error[0]) cJSON_AddStringToObject(t, "error", snap.test_error);
-    } else {
-        cJSON_AddNullToObject(json, "last_test");
-    }
     return json;
 }
 
@@ -649,10 +553,155 @@ static esp_err_t handler_settings_ui(httpd_req_t *req) {
     return httpd_resp_sendstr(req, PCCTL_SETTINGS_HTML);
 }
 
-static esp_err_t handler_post_config_token(httpd_req_t *req) {
-    const char *status = NULL, *error = NULL;
-    if (!authorize_mutation(req, &status, &error)) {
-        return send_error(req, status, error, "send X-PC-Token or Authorization: Bearer");
+/* ---------- admin login + API-token management (/pc/security) ---------- */
+
+static bool session_authorized(httpd_req_t *req) {
+    char sid[40];
+    size_t len = sizeof(sid);
+    if (httpd_req_get_cookie_val(req, "pcctl_sess", sid, &len) != ESP_OK) return false;
+    return pc_auth_session_valid(sid);
+}
+
+static esp_err_t handler_security_ui(httpd_req_t *req) {
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    return httpd_resp_sendstr(req, PCCTL_SECURITY_HTML);
+}
+
+static esp_err_t handler_auth_status(httpd_req_t *req) {
+    cJSON *json = cJSON_CreateObject();
+    if (!json) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+    char user[PC_AUTH_USER_MAX + 1] = "";
+    char tok[PC_AUTH_TOKEN_MAX + 1];
+    pc_auth_username(user, sizeof(user));
+    cJSON_AddBoolToObject(json, "ok", true);
+    cJSON_AddBoolToObject(json, "logged_in", session_authorized(req));
+    cJSON_AddStringToObject(json, "username", user);
+    cJSON_AddBoolToObject(json, "api_token_set", pc_auth_api_token(tok, sizeof(tok)));
+    cJSON_AddBoolToObject(json, "api_token_custom", pc_auth_api_token_overridden());
+    return send_json_status(req, NULL, json);
+}
+
+static esp_err_t handler_auth_login(httpd_req_t *req) {
+    if (req->content_len > MAX_BODY_LEN) {
+        return send_error(req, "413 Payload Too Large", "body_too_large", NULL);
+    }
+    if (!content_type_is_json(req)) {
+        return send_error(req, "415 Unsupported Media Type", "content_type_required", NULL);
+    }
+    char *body = read_body(req);
+    if (!body) return send_error(req, "400 Bad Request", "invalid_body", NULL);
+    cJSON *json = cJSON_Parse(body);
+    memset(body, 0, strlen(body));
+    free(body);
+    if (!json) return send_error(req, "400 Bad Request", "invalid_json", NULL);
+
+    cJSON *u = cJSON_GetObjectItem(json, "username");
+    cJSON *p = cJSON_GetObjectItem(json, "password");
+    bool ok = cJSON_IsString(u) && cJSON_IsString(p) &&
+              pc_auth_verify(u->valuestring, p->valuestring);
+    if (p && cJSON_IsString(p)) memset(p->valuestring, 0, strlen(p->valuestring));
+    cJSON_Delete(json);
+
+    if (!ok) return send_error(req, "401 Unauthorized", "invalid_credentials", NULL);
+
+    char sid[40];
+    if (!pc_auth_session_create(sid, sizeof(sid))) {
+        return send_error(req, "500 Internal Server Error", "session_error", NULL);
+    }
+    char cookie[128];
+    snprintf(cookie, sizeof(cookie),
+             "pcctl_sess=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict",
+             sid, PC_AUTH_SESSION_TTL_S);
+    httpd_resp_set_hdr(req, "Set-Cookie", cookie);
+    cJSON *resp = cJSON_CreateObject();
+    if (!resp) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddBoolToObject(resp, "logged_in", true);
+    return send_json_status(req, NULL, resp);
+}
+
+static esp_err_t handler_auth_logout(httpd_req_t *req) {
+    char sid[40];
+    size_t len = sizeof(sid);
+    if (httpd_req_get_cookie_val(req, "pcctl_sess", sid, &len) == ESP_OK) {
+        pc_auth_session_destroy(sid);
+    }
+    httpd_resp_set_hdr(req, "Set-Cookie",
+                       "pcctl_sess=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict");
+    cJSON *resp = cJSON_CreateObject();
+    if (!resp) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddBoolToObject(resp, "logged_in", false);
+    return send_json_status(req, NULL, resp);
+}
+
+static esp_err_t handler_auth_credentials(httpd_req_t *req) {
+    if (!session_authorized(req)) {
+        return send_error(req, "401 Unauthorized", "login_required",
+                          "log in at /pc/security");
+    }
+    if (req->content_len > MAX_BODY_LEN) {
+        return send_error(req, "413 Payload Too Large", "body_too_large", NULL);
+    }
+    if (!content_type_is_json(req)) {
+        return send_error(req, "415 Unsupported Media Type", "content_type_required", NULL);
+    }
+    char *body = read_body(req);
+    if (!body) return send_error(req, "400 Bad Request", "invalid_body", NULL);
+    cJSON *json = cJSON_Parse(body);
+    memset(body, 0, strlen(body));
+    free(body);
+    if (!json) return send_error(req, "400 Bad Request", "invalid_json", NULL);
+
+    cJSON *cur = cJSON_GetObjectItem(json, "current_password");
+    cJSON *u = cJSON_GetObjectItem(json, "username");
+    cJSON *p = cJSON_GetObjectItem(json, "new_password");
+    const char *cur_pw = (cur && cJSON_IsString(cur)) ? cur->valuestring : NULL;
+    const char *new_u = (u && cJSON_IsString(u)) ? u->valuestring : NULL;
+    const char *new_p = (p && cJSON_IsString(p)) ? p->valuestring : NULL;
+
+    esp_err_t err = pc_auth_change_credentials(cur_pw, new_u, new_p);
+    if (cur && cJSON_IsString(cur)) memset(cur->valuestring, 0, strlen(cur->valuestring));
+    if (p && cJSON_IsString(p)) memset(p->valuestring, 0, strlen(p->valuestring));
+    cJSON_Delete(json);
+
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_error(req, "403 Forbidden", "wrong_password",
+                          "the current password is incorrect");
+    }
+    if (err == ESP_ERR_INVALID_ARG) {
+        return send_error(req, "400 Bad Request", "invalid_credentials",
+                          "username 1-32 chars (no spaces); password 1-64 printable ASCII");
+    }
+    if (err != ESP_OK) {
+        return send_error(req, "500 Internal Server Error", "nvs_error",
+                          esp_err_to_name(err));
+    }
+    cJSON *resp = cJSON_CreateObject();
+    if (!resp) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+    cJSON_AddBoolToObject(resp, "ok", true);
+    return send_json_status(req, NULL, resp);
+}
+
+static esp_err_t handler_get_api_token(httpd_req_t *req) {
+    if (!session_authorized(req)) {
+        return send_error(req, "401 Unauthorized", "login_required",
+                          "log in at /pc/security");
+    }
+    cJSON *json = cJSON_CreateObject();
+    if (!json) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+    char tok[PC_AUTH_TOKEN_MAX + 1];
+    cJSON_AddBoolToObject(json, "ok", true);
+    cJSON_AddBoolToObject(json, "set", pc_auth_api_token(tok, sizeof(tok)));
+    cJSON_AddBoolToObject(json, "custom", pc_auth_api_token_overridden());
+    return send_json_status(req, NULL, json);
+}
+
+static esp_err_t handler_post_api_token(httpd_req_t *req) {
+    if (!session_authorized(req)) {
+        return send_error(req, "401 Unauthorized", "login_required",
+                          "log in at /pc/security");
     }
     if (req->content_len > MAX_BODY_LEN) {
         return send_error(req, "413 Payload Too Large", "body_too_large", NULL);
@@ -666,53 +715,48 @@ static esp_err_t handler_post_config_token(httpd_req_t *req) {
     free(body);
     if (!json) return send_error(req, "400 Bad Request", "invalid_json", NULL);
 
-    cJSON *tok = cJSON_GetObjectItem(json, "token");
+    cJSON *gen = cJSON_GetObjectItem(json, "generate");
     cJSON *clear = cJSON_GetObjectItem(json, "clear");
-    const char *set_val = NULL;
-    if (tok && cJSON_IsString(tok)) {
-        set_val = tok->valuestring;
+    cJSON *tok = cJSON_GetObjectItem(json, "token");
+
+    char newtok[PC_AUTH_TOKEN_MAX + 1] = "";
+    bool show = false;
+    esp_err_t err;
+    if (gen && cJSON_IsTrue(gen)) {
+        err = pc_auth_generate_api_token(newtok, sizeof(newtok));
+        show = true;
     } else if (clear && cJSON_IsTrue(clear)) {
-        set_val = "";
+        err = pc_auth_set_api_token("");
+    } else if (tok && cJSON_IsString(tok)) {
+        err = pc_auth_set_api_token(tok->valuestring);
+        snprintf(newtok, sizeof(newtok), "%s", tok->valuestring);
+        show = true;
     } else {
         cJSON_Delete(json);
         return send_error(req, "400 Bad Request", "invalid_body",
-                          "provide {token} or {clear:true}");
+                          "provide {generate:true}, {token}, or {clear:true}");
     }
-
-    esp_err_t err = pc_config_set_token(set_val);
     cJSON_Delete(json);
+
     if (err == ESP_ERR_INVALID_ARG) {
         return send_error(req, "400 Bad Request", "invalid_token",
-                          "4-95 printable chars, no spaces or quotes");
+                          "4-96 printable chars, no spaces or quotes");
     }
     if (err != ESP_OK) {
         return send_error(req, "500 Internal Server Error", "nvs_error",
                           esp_err_to_name(err));
     }
     cJSON *resp = cJSON_CreateObject();
+    if (!resp) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+    char eff[PC_AUTH_TOKEN_MAX + 1];
     cJSON_AddBoolToObject(resp, "ok", true);
-    cJSON_AddBoolToObject(resp, "token_set", set_val[0] != '\0');
+    cJSON_AddBoolToObject(resp, "set", pc_auth_api_token(eff, sizeof(eff)));
+    cJSON_AddBoolToObject(resp, "custom", pc_auth_api_token_overridden());
+    if (show) cJSON_AddStringToObject(resp, "token", newtok);
+    memset(newtok, 0, sizeof(newtok));
     return send_json_status(req, NULL, resp);
 }
 
-static esp_err_t handler_post_config_test(httpd_req_t *req) {
-    const char *status = NULL, *error = NULL;
-    if (!authorize_mutation(req, &status, &error)) {
-        return send_error(req, status, error, "send X-PC-Token or Authorization: Bearer");
-    }
-    esp_err_t err = pc_controller_request_test();
-    if (err == ESP_ERR_NO_MEM) {
-        return send_error(req, "409 Conflict", "busy", "test already queued - retry");
-    }
-    if (err != ESP_OK) {
-        return send_error(req, "503 Service Unavailable", "unavailable",
-                          esp_err_to_name(err));
-    }
-    cJSON *resp = cJSON_CreateObject();
-    cJSON_AddBoolToObject(resp, "ok", true);
-    cJSON_AddStringToObject(resp, "state", "testing");
-    return send_json_status(req, "202 Accepted", resp);
-}
 
 /* POST /api/v1/config - partial update of the runtime configuration.
  * Validated + persisted via pc_config_apply (no partial writes); the agent
@@ -741,31 +785,6 @@ static esp_err_t handler_post_config(httpd_req_t *req) {
     pc_config_patch_t patch;
     memset(&patch, 0, sizeof(patch));
     cJSON *item;
-
-    if ((item = cJSON_GetObjectItem(json, "pc_host"))) {
-        if (!cJSON_IsString(item) || item->valuestring[0] == '\0') {
-            cJSON_Delete(json);
-            return send_error(req, "400 Bad Request", "invalid_field", "pc_host");
-        }
-        patch.set_host = true;
-        patch.host = item->valuestring;   /* valid until after pc_config_apply */
-    }
-    if ((item = cJSON_GetObjectItem(json, "pc_port"))) {
-        if (!cJSON_IsNumber(item)) {
-            cJSON_Delete(json);
-            return send_error(req, "400 Bad Request", "invalid_field", "pc_port");
-        }
-        patch.set_port = true;
-        patch.port = (int)item->valuedouble;
-    }
-    if ((item = cJSON_GetObjectItem(json, "timeout_ms"))) {
-        if (!cJSON_IsNumber(item)) {
-            cJSON_Delete(json);
-            return send_error(req, "400 Bad Request", "invalid_field", "timeout_ms");
-        }
-        patch.set_timeout = true;
-        patch.timeout_ms = (int)item->valuedouble;
-    }
 
     cJSON *funcs = cJSON_GetObjectItem(json, "functions");
     if (funcs && cJSON_IsObject(funcs)) {
@@ -877,9 +896,6 @@ static esp_err_t handler_post_config(httpd_req_t *req) {
         return send_error(req, "500 Internal Server Error", "nvs_error",
                           esp_err_to_name(err));
     }
-
-    /* the agent address may have changed: drop the cached resolution */
-    pc_win_client_invalidate();
 
     cJSON *resp = config_to_json();
     if (!resp) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
@@ -997,6 +1013,34 @@ static esp_err_t handler_post_hid_cancel(httpd_req_t *req) {
     }
 }
 
+/* ---------- device control ---------- */
+
+/* POST /api/v1/device/reboot - restart the ESP32 firmware.
+ *
+ * A plain reboot: WiFi credentials, the Tailnet identity, the GPIO mapping,
+ * the login and the API token are all kept. Token-gated like every other
+ * mutation. The response is sent first and the restart follows after a short
+ * delay so the reply reaches the client before the network goes away. */
+static esp_err_t handler_post_reboot(httpd_req_t *req) {
+    const char *status = NULL, *error = NULL;
+    if (!authorize_mutation(req, &status, &error)) {
+        return send_error(req, status, error, "send X-PC-Token or Authorization: Bearer");
+    }
+    cJSON *resp = cJSON_CreateObject();
+    if (!resp) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddBoolToObject(resp, "rebooting", true);
+    esp_err_t err = send_json_status(req, NULL, resp);
+
+    ESP_LOGW(TAG, "device reboot requested via /api/v1/device/reboot");
+
+    /* Let the HTTP response drain, then restart. */
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return err;   /* unreachable */
+}
+
+
 /* ---------- registration ---------- */
 
 esp_err_t pc_api_start(microlink_t *ml) {
@@ -1013,17 +1057,22 @@ esp_err_t pc_api_start(microlink_t *ml) {
     const httpd_uri_t routes[] = {
         { .uri = "/pc",                .method = HTTP_GET,  .handler = handler_ui,                .user_ctx = ml },
         { .uri = "/pc/settings",       .method = HTTP_GET,  .handler = handler_settings_ui,       .user_ctx = ml },
+        { .uri = "/pc/security",       .method = HTTP_GET,  .handler = handler_security_ui,       .user_ctx = ml },
         { .uri = "/api/v1/status",     .method = HTTP_GET,  .handler = handler_status,            .user_ctx = ml },
         { .uri = "/api/v1/commands",   .method = HTTP_GET,  .handler = handler_get_commands,      .user_ctx = ml },
         { .uri = "/api/v1/commands",   .method = HTTP_POST, .handler = handler_post_commands,     .user_ctx = ml },
         { .uri = "/api/v1/commands/*", .method = HTTP_GET,  .handler = handler_get_command_by_id, .user_ctx = ml },
-        { .uri = "/api/v1/commands/*", .method = HTTP_POST, .handler = handler_post_cancel,       .user_ctx = ml },
         { .uri = "/api/v1/config",       .method = HTTP_GET,  .handler = handler_get_config,        .user_ctx = ml },
         { .uri = "/api/v1/config",       .method = HTTP_POST, .handler = handler_post_config,       .user_ctx = ml },
-        { .uri = "/api/v1/config/token", .method = HTTP_POST, .handler = handler_post_config_token, .user_ctx = ml },
-        { .uri = "/api/v1/config/test",  .method = HTTP_POST, .handler = handler_post_config_test,  .user_ctx = ml },
         { .uri = "/api/v1/hid/login",    .method = HTTP_POST, .handler = handler_post_hid_login,    .user_ctx = ml },
         { .uri = "/api/v1/hid/cancel",   .method = HTTP_POST, .handler = handler_post_hid_cancel,   .user_ctx = ml },
+        { .uri = "/api/v1/auth/status",      .method = HTTP_GET,  .handler = handler_auth_status,      .user_ctx = ml },
+        { .uri = "/api/v1/auth/login",       .method = HTTP_POST, .handler = handler_auth_login,       .user_ctx = ml },
+        { .uri = "/api/v1/auth/logout",      .method = HTTP_POST, .handler = handler_auth_logout,      .user_ctx = ml },
+        { .uri = "/api/v1/auth/credentials", .method = HTTP_POST, .handler = handler_auth_credentials, .user_ctx = ml },
+        { .uri = "/api/v1/auth/api-token",   .method = HTTP_GET,  .handler = handler_get_api_token,    .user_ctx = ml },
+        { .uri = "/api/v1/auth/api-token",   .method = HTTP_POST, .handler = handler_post_api_token,   .user_ctx = ml },
+        { .uri = "/api/v1/device/reboot",    .method = HTTP_POST, .handler = handler_post_reboot,      .user_ctx = ml },
     };
 
     int registered = 0;
@@ -1038,7 +1087,8 @@ esp_err_t pc_api_start(microlink_t *ml) {
     }
 
     const char *auth_mode;
-    if (CONFIG_PCCTL_API_TOKEN[0] != '\0') {
+    char tok[PC_AUTH_TOKEN_MAX + 1];
+    if (pc_auth_api_token(tok, sizeof(tok))) {
         auth_mode = "mutations require X-PC-Token";
     } else {
 #ifdef CONFIG_PCCTL_ALLOW_NO_TOKEN

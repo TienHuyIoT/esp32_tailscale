@@ -33,6 +33,7 @@
 
 #include "pc_controller.h"
 #include "pc_config.h"
+#include "pc_auth.h"
 #include "pc_api.h"
 #include "pc_hid.h"
 
@@ -222,6 +223,8 @@ void app_main(void) {
 
     /* Runtime configuration (NVS-backed; Kconfig values are the defaults) */
     pc_config_init();
+    /* Admin login (default admin/admin) + runtime API token */
+    pc_auth_init();
 
     ESP_LOGI(TAG, "MicroLink v2 PC Control example");
     ESP_LOGI(TAG, "Free heap: %lu bytes (PSRAM: %lu bytes)",
@@ -332,8 +335,7 @@ void app_main(void) {
         ESP_LOGW(TAG, "pc_hid_start failed (%s) - HID login unavailable",
                  esp_err_to_name(hid_err));
     }
-    ESP_LOGI(TAG, "PC control ready (mode=%s) - open http://<vpn-ip>/pc once connected",
-             pc_controller_mode_str());
+    ESP_LOGI(TAG, "PC control ready - open http://<vpn-ip>/pc once connected");
 
     /* Wait for CONNECTED state before creating the UDP echo socket */
     while (!microlink_is_connected(ml)) {

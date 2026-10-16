@@ -65,16 +65,6 @@ CONFIG_ML_PRIORITY_PEER_IP=""
 # ---------------------------------------------------------------------------
 # PC Control example (full option list: main/Kconfig.projbuild)
 # ---------------------------------------------------------------------------
-# Mock all six commands in firmware until the Windows agent + (future)
-# physical circuit have been validated.
-CONFIG_PCCTL_EXEC_MODE_MOCK_ALL=y
-# Windows agent on the tailnet (MagicDNS name or plain VPN IP)
-# Empty by default - set it here, in /pc/settings, or via the local
-# (gitignored) sdkconfig.credentials overlay.
-CONFIG_PCCTL_WIN_HOST=""
-CONFIG_PCCTL_WIN_PORT=8765
-# Agent status poll cadence (seconds)
-CONFIG_PCCTL_POLL_INTERVAL_S=10
 # ---------------------------------------------------------------------------
 # USB HID login (PC Control): TinyUSB keyboard on the native USB port.
 # The USB-Serial-JTAG controller shares the same pins (GPIO19/20), so it is
