@@ -35,10 +35,14 @@ examples/pc_control/
     pc_controller.[ch]  pc_ctl task: queue, dedup, cooldown, timeouts
     pc_api.[ch]         /pc + /api/v1/* handlers (shared port-80 server)
     pc_web.h            embedded ISUI control + settings pages (vanilla JS)
-    pc_ui_theme.h       shared ISUI theme (dark-glass CSS + UI helpers)
     pc_security_web.h   embedded login + API-token page
     Kconfig.projbuild   example options (token, timings, HID)
 ```
+
+The shared ISUI theme (dark-glass CSS + helper/space JS) lives in the
+microlink component now (`ml_ui_theme.h`), served as cached `/ml/static/*`
+assets by `ml_ui.c` - so the component's own config page at `/` uses the
+identical theme and the same browser cache.
 
 ## URLs
 
@@ -201,8 +205,10 @@ relay-module hardware notes (trigger polarity, AC/DC rating, isolation).
 
 ## Interface theme (ISUI Space scene)
 
-All three embedded pages share the ISUI dark-glass theme
-(`main/pc_ui_theme.h`). The **Space scene** (Ætherium + Galaxy Drift, adapted
+All three embedded pages - and the component's own config page at `/` - share
+one ISUI dark-glass theme, defined in the microlink component
+(`components/microlink/include/ml_ui_theme.h`, served as `/ml/static/*` by
+`ml_ui.c`). The **Space scene** (Ætherium + Galaxy Drift, adapted
 from `docs/design-standard/ISUI_Web_Design_Kit_v2/reference/ISUI_SPACE_SCENE_REFERENCE.html`)
 adds: a WebGL nebula/starfield backdrop (own fragment shader, no external
 libraries), a WebGL prism backdrop + a WebGL power-orb sphere with orbit
@@ -220,9 +226,10 @@ desktop, and depth-styled glass cards.
   2D-canvas starfield; WebGL is paused while the tab is hidden and disposed
   when switching to Glass.
 - Page-switch performance: the shared theme CSS/JS is served as long-lived
-  cacheable assets under `/pc/static/`, versioned by the firmware build id
-  (every flash auto-busts the browser cache), so switching pages only
-  re-fetches a small HTML page (roughly 13-50 KB instead of 81-116 KB).
+  cacheable assets under `/ml/static/`, versioned by the firmware build id
+  (every flash auto-busts the browser cache), so switching pages - including
+  `/` and the `/pc` pages - only re-fetches a small HTML page (roughly
+  13-50 KB instead of 81-116 KB).
   The CSS scene paints immediately while the WebGL tiers start on idle
   (galaxy at ~30 fps with a reduced backing-store scale, prisms/orb a
   moment later), so shader compilation never blocks navigation.

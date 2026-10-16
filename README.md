@@ -35,7 +35,9 @@ Production-ready Tailscale VPN client for the ESP32 platform with WiFi and 4G ce
   - Memory-optimized: ~85-116KB SRAM static, PSRAM for large tailnet buffers
 
 - **HTTP Config Server**
-  - Web UI at `http://<vpn-ip>/` — system monitor, peer management, device settings
+  - Web UI at `http://<vpn-ip>/` — ISUI dark-glass theme (shared with the
+    pc_control pages through cached `/ml/static/*` assets): system monitor,
+    WiFi network list, peer allowlist, device settings
   - REST API: `/api/settings`, `/api/peers`, `/api/peers/allowed`, `/api/monitor`, `/api/status`, `/api/restart`
   - All settings persist in NVS — no rebuild needed
   - Ifdef-gated: zero cost when disabled
@@ -507,7 +509,7 @@ Enable `CONFIG_ML_ENABLE_CONFIG_HTTPD=y` in sdkconfig.defaults to get a web UI a
 
 **Device Settings** — WiFi, Tailscale auth key, device name, cellular APN, plus advanced settings (max peers, DISCO heartbeat, priority peer, control plane host for Headscale/Ionscale, debug flags). All persist in NVS and take effect on restart.
 
-**Resource usage** — ~28KB flash, ~7KB RAM (6KB HTTP task stack + 1KB NVS config). Ifdef-gated: zero cost when disabled (`CONFIG_ML_ENABLE_CONFIG_HTTPD=n`).
+**Resource usage** — ~30KB flash (HTML page) + ~77KB shared ISUI theme assets (CSS + helper scripts, also served to the pc_control pages), ~7KB RAM (6KB HTTP task stack + 1KB NVS config). Ifdef-gated: zero cost when disabled (`CONFIG_ML_ENABLE_CONFIG_HTTPD=n`).
 
 **LAN IP** — The System Monitor shows a **LAN IP** card, and `/api/status` reports it as `wifi_ip` — so you can find the device's LAN address (e.g. `192.168.1.42`) even when you're reaching the UI over the tailnet. While in setup mode it shows the setup-AP address `192.168.4.1`.
 
@@ -523,6 +525,7 @@ Enable `CONFIG_ML_ENABLE_CONFIG_HTTPD=y` in sdkconfig.defaults to get a web UI a
 | `/api/wifi` | GET/POST | Manage the WiFi network list (priority order) |
 | `/api/wifi/scan` | GET | Scan nearby APs (setup-mode WiFi picker) |
 | `/api/restart` | POST | Restart the device |
+| `/ml/static/` | GET | Shared ISUI theme assets (`theme.css`, `ui.js`, `space.js`) - immutable cache, versioned by build id; also used by the pc_control pages |
 
 **Device naming** — Set a prefix (e.g. `sensor`) to auto-generate `sensor-a1b2c3` from MAC, or set a full custom name. Tailscale creates the DNS entry: `your-name.your-tailnet.ts.net`.
 

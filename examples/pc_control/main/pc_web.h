@@ -3,10 +3,10 @@
  * @brief Embedded ISUI pages for the PC controller: the control deck (/pc)
  *        and the device Settings page (/pc/settings).
  *
- * The pages share the ISUI theme (pc_ui_theme.h: CSS + helper JS); this
- * header holds only the per-page markup and page script, which pc_api.c
- * streams through send_ui_page(). Include pc_ui_theme.h once (pc_api.c)
- * before this header.
+ * The pages share the ISUI theme (component ml_ui.c/ml_ui_theme.h: CSS +
+ * helper JS, served as cached /ml/static/ assets); this header holds only
+ * the per-page markup and page script, which pc_api.c streams through
+ * ml_ui_serve_page().
  *
  * Behavior contract (unchanged from the pre-ISUI page):
  *  - PC power state is only ever reported with an explicit source/note -

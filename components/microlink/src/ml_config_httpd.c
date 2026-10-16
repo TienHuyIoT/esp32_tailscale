@@ -14,6 +14,7 @@
 #ifdef CONFIG_ML_ENABLE_CONFIG_HTTPD
 
 #include "ml_config_httpd.h"
+#include "ml_ui.h"
 #include "microlink.h"
 #include "microlink_internal.h"
 #include "esp_log.h"
@@ -396,11 +397,11 @@ static void netif_ip4_to_str(const esp_ip4_addr_t *addr, char *buf, size_t len) 
              (unsigned)((addr->addr >> 24) & 0xFF));
 }
 
-/* GET / — serve HTML config page */
+/* GET / — serve the config page: shared ISUI theme (cached /ml/static/
+ * assets) + this page's markup and script from ml_config_html.h */
 static esp_err_t handler_root(httpd_req_t *req) {
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_sendstr(req, CONFIG_PAGE_HTML);
-    return ESP_OK;
+    return ml_ui_serve_page(req, "<title>MicroLink</title>",
+                            CONFIG_PAGE_MARKUP, CONFIG_PAGE_SCRIPT);
 }
 
 /* GET /api/status */
@@ -1260,7 +1261,7 @@ esp_err_t ml_config_httpd_start(ml_config_ctx_t *ctx, microlink_t *ml) {
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = 6144;
-    /* 13 base routes + 22 pc_control routes (/pc + /api/v1/...) + margin */
+    /* 14 base routes + 21 pc_control routes (/pc + /api/v1/...) + margin */
     config.max_uri_handlers = 40;
     config.uri_match_fn = httpd_uri_match_wildcard;
 
@@ -1273,6 +1274,7 @@ esp_err_t ml_config_httpd_start(ml_config_ctx_t *ctx, microlink_t *ml) {
     /* Register URI handlers */
     const httpd_uri_t uris[] = {
         { .uri = "/",                .method = HTTP_GET,    .handler = handler_root,          .user_ctx = ctx },
+        { .uri = "/ml/static/*",     .method = HTTP_GET,    .handler = ml_ui_static_handler,  .user_ctx = ctx },
         { .uri = "/api/status",      .method = HTTP_GET,    .handler = handler_status,        .user_ctx = ctx },
         { .uri = "/api/settings",    .method = HTTP_GET,    .handler = handler_get_settings,  .user_ctx = ctx },
         { .uri = "/api/settings",    .method = HTTP_POST,   .handler = handler_post_settings, .user_ctx = ctx },

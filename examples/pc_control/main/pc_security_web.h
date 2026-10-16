@@ -3,8 +3,8 @@
  * @brief Embedded ISUI Security page (/pc/security): admin login, API-token
  *        management (generate/set/clear) and login-credential change.
  *
- * Same ISUI theme/shell as the other /pc pages (pc_ui_theme.h + pc_api.c
- * send_ui_page()); include pc_ui_theme.h once (pc_api.c) before this header.
+ * Same ISUI theme/shell as the other /pc pages (component ml_ui.c + pc_api.c
+ * ml_ui_serve_page()).
  *
  * Gated by a username/password login (default admin/admin) that yields a
  * RAM-only session cookie. Every mutating call on this page requires that

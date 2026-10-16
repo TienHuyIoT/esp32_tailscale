@@ -37,7 +37,6 @@
 #include "pc_api.h"
 #include "pc_web.h"
 #include "pc_security_web.h"
-#include "pc_ui_theme.h"
 #include "pc_controller.h"
 #include "pc_config.h"
 #include "pc_auth.h"
@@ -46,10 +45,10 @@
 #include "pc_hid.h"
 #include "pc_relay.h"
 #include "ml_config_httpd.h"
+#include "ml_ui.h"
 #include "microlink_internal.h"
 #include "esp_http_server.h"
 #include "esp_system.h"
-#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_netif.h"
@@ -96,80 +95,10 @@ static esp_err_t send_error(httpd_req_t *req, const char *status,
 }
 
 /* ---------- embedded ISUI pages ---------- */
-
-/* Build the shared-asset URL version from the app description (firmware
- * version + build date/time): every flash automatically busts the browser
- * cache of the /pc/static/ assets without manual bookkeeping. */
-static void ui_asset_version(char *out, size_t out_len) {
-    const esp_app_desc_t *app = esp_app_get_description();
-    snprintf(out, out_len, "%s-%s-%s", app->version, app->date, app->time);
-    for (char *p = out; *p; p++) {
-        if (*p == ' ') *p = '-';
-    }
-}
-
-/* Serve one embedded UI page: doctype + title + the shared theme CSS and the
- * helper scripts as separate long-lived cacheable assets (under /pc/static/,
- * versioned URL) + the page's own markup and script. Switching pages then
- * re-downloads only this (small, uncached) HTML - the shared ~65 KB of
- * CSS/JS comes from the browser cache and is never re-parsed from network. */
-static esp_err_t send_ui_page(httpd_req_t *req, const char *title,
-                              const char *markup, const char *script) {
-    char ver[48];
-    ui_asset_version(ver, sizeof(ver));
-    char css_tag[128];
-    snprintf(css_tag, sizeof(css_tag),
-             "<link rel=\"stylesheet\" href=\"/pc/static/theme.css?v=%s\"></head>", ver);
-    char js_tag1[128];
-    snprintf(js_tag1, sizeof(js_tag1),
-             "<script src=\"/pc/static/ui.js?v=%s\"></script>", ver);
-    char js_tag2[128];
-    snprintf(js_tag2, sizeof(js_tag2),
-             "<script src=\"/pc/static/space.js?v=%s\"></script>", ver);
-
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    httpd_resp_sendstr_chunk(req, "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-        "<meta name=\"color-scheme\" content=\"dark\">");
-    httpd_resp_sendstr_chunk(req, title);
-    httpd_resp_sendstr_chunk(req, css_tag);
-    httpd_resp_sendstr_chunk(req, markup);
-    httpd_resp_sendstr_chunk(req, js_tag1);
-    httpd_resp_sendstr_chunk(req, js_tag2);
-    httpd_resp_sendstr_chunk(req, "<script>");
-    httpd_resp_sendstr_chunk(req, script);
-    httpd_resp_sendstr_chunk(req, "</script></body></html>");
-    return httpd_resp_sendstr_chunk(req, NULL);
-}
-
-/* ---------- cacheable shared UI assets (/pc/static/) ---------- */
-
-static esp_err_t handler_static(httpd_req_t *req) {
-    const char *prefix = "/pc/static/";
-    size_t n = strlen(prefix);
-    const char *rest = (strncmp(req->uri, prefix, n) == 0) ? req->uri + n : NULL;
-    const char *body = NULL;
-    const char *type = NULL;
-    if (rest) {
-        /* req->uri includes the query string (?v=... cache buster): compare
-         * only the part before '?' / '#'. */
-        size_t len = strcspn(rest, "?#");
-        if (len == 9 && strncmp(rest, "theme.css", len) == 0) {
-            body = PCCTL_UI_CSS; type = "text/css";
-        } else if (len == 5 && strncmp(rest, "ui.js", len) == 0) {
-            body = PCCTL_UI_JS; type = "application/javascript";
-        } else if (len == 8 && strncmp(rest, "space.js", len) == 0) {
-            body = PCCTL_UI_SPACE_JS; type = "application/javascript";
-        }
-    }
-    if (!body) {
-        return send_error(req, "404 Not Found", "not_found", NULL);
-    }
-    httpd_resp_set_type(req, type);
-    httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=31536000, immutable");
-    return httpd_resp_sendstr(req, body);
-}
+/* Page serving + the shared theme assets (/ml/static/theme.css, /ml/static/
+ * ui.js, /ml/static/space.js) live in the microlink component now
+ * (ml_ui.c / ml_ui.h): the component's own config page and these /pc pages
+ * share one theme, one asset cache and one URL space. */
 
 /* ---------- request helpers ---------- */
 
@@ -682,7 +611,7 @@ static esp_err_t handler_get_config(httpd_req_t *req) {
 }
 
 static esp_err_t handler_settings_ui(httpd_req_t *req) {
-    return send_ui_page(req, "<title>Control Deck - Settings</title>",
+    return ml_ui_serve_page(req, "<title>Control Deck - Settings</title>",
                         PCCTL_SETTINGS_MARKUP, PCCTL_SETTINGS_SCRIPT);
 }
 
@@ -696,7 +625,7 @@ static bool session_authorized(httpd_req_t *req) {
 }
 
 static esp_err_t handler_security_ui(httpd_req_t *req) {
-    return send_ui_page(req, "<title>Control Deck - Security</title>",
+    return ml_ui_serve_page(req, "<title>Control Deck - Security</title>",
                         PCCTL_SECURITY_MARKUP, PCCTL_SECURITY_SCRIPT);
 }
 
@@ -1380,7 +1309,7 @@ static esp_err_t handler_post_relays_config(httpd_req_t *req) {
 /* ---------- GET /pc ---------- */
 
 static esp_err_t handler_ui(httpd_req_t *req) {
-    return send_ui_page(req, "<title>Control Deck - PC Control</title>",
+    return ml_ui_serve_page(req, "<title>Control Deck - PC Control</title>",
                         PCCTL_PAGE_MARKUP, PCCTL_PAGE_SCRIPT);
 }
 
@@ -1532,7 +1461,6 @@ esp_err_t pc_api_start(microlink_t *ml) {
         { .uri = "/pc",                .method = HTTP_GET,  .handler = handler_ui,                .user_ctx = ml },
         { .uri = "/pc/settings",       .method = HTTP_GET,  .handler = handler_settings_ui,       .user_ctx = ml },
         { .uri = "/pc/security",       .method = HTTP_GET,  .handler = handler_security_ui,       .user_ctx = ml },
-        { .uri = "/pc/static/*",       .method = HTTP_GET,  .handler = handler_static,            .user_ctx = ml },
         { .uri = "/api/v1/status",     .method = HTTP_GET,  .handler = handler_status,            .user_ctx = ml },
         { .uri = "/api/v1/commands",   .method = HTTP_GET,  .handler = handler_get_commands,      .user_ctx = ml },
         { .uri = "/api/v1/commands",   .method = HTTP_POST, .handler = handler_post_commands,     .user_ctx = ml },

@@ -78,7 +78,9 @@ components/microlink/
     ml_cellular.c         — PPP data path + AT socket bridge fallback
     ml_at_socket.c        — AT command socket bridge (slow path)
     ml_net_switch.c       — WiFi/cellular switching, health monitoring, rebind
-    ml_config_httpd.c     — Web UI + REST API
+    ml_config_httpd.c     — Web UI + REST API (ISUI page in ml_config_html.h)
+    ml_ui.c               — shared ISUI theme assets (/ml/static/) + page serving
+    ml_ui_theme.h         — shared theme CSS/JS (config page + pc_control pages)
     ml_prov.c             — SoftAP setup mode (provisioning fallback + captive portal)
     ml_zerocopy.c         — Zero-copy WG receive via raw lwIP PCB
     nacl_box.c / x25519.c — Crypto primitives

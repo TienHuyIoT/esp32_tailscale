@@ -3,7 +3,10 @@
 Scope: redesign the ESP32 firmware's embedded web UI (`examples/pc_control`)
 with the ISUI design language from `reference/ISUI_REFERENCE.html`.
 Execution mode: plan-first (approved 2026-10); plan: 3 pages + real relay
-configure modal on `/pc`.
+configure modal on `/pc`. Extended (2026-10, S10): the shared theme was
+hoisted into the `microlink` component (`ml_ui_theme.h` + `ml_ui.c`, served
+under `/ml/static/`) and the component's own config page at `/` now uses the
+same theme and asset cache.
 
 ## Status
 
@@ -17,6 +20,8 @@ configure modal on `/pc`.
 | S6 | Space scene (Ætherium + Galaxy Drift) from `reference/ISUI_SPACE_SCENE_REFERENCE.html`, full-WebGL port (user choice), Space/Glass toggle | DONE | branch `feat/isui-space-scene`; build OK; `node --check` x5; flashed COM9; pages served 116/90/81 KB with scene markers; API regression green |
 | S7 | Relay channels: max 16 + per-channel delete (NVS length-driven migration, `delete_channel` API with shift, Delete buttons on /pc modal + /pc/settings rows) | DONE | build+flash; existing config preserved across the 8->16 limit bump; add/shift/delete round-trip + reboot persistence + error cases (404/400) verified on the device; 2 transcription bugs caught & fixed by those tests |
 | S8 | Perf: page-switch lag fix - cacheable `/pc/static/` assets (build-id versioned, immutable) + lazy 2-phase WebGL boot + galaxy 30 fps @ 0.66 render scale + alienPulse removed | DONE + follow-up fix | headers verified (immutable assets, correct content types, 404 fallback); page HTML 116/90/81 KB -> 50/24/13 KB; API regression green. Follow-up: the first release 404'd on the exact `?v=` URLs (esp_http_server puts the query in `req->uri`); `handler_static` now strips `?`/`#` before matching and is re-verified against the exact versioned URLs from the served page |
+| S9 | Fix: relay cards looked tilted/unbalanced after a page reload until the first mouse move (the static "deck" skew showed before the tilt module marked cards on pointermove) | DONE | theme CSS flattens cards on fine pointers from the first paint; tilt marks every card at module start and `window.isuiTiltRefresh()` is called after each `renderRelays()` grid rebuild; verified inside the served `theme.css`/`space.js` on the device |
+| S10 | Shared theme hoisted into the microlink component (`ml_ui_theme.h` + `ml_ui.c`, assets under `/ml/static/`) and the component's own config page `/` redesigned on the ISUI theme (Space scene + cached assets shared with all /pc pages; `/pc/static/` route removed) | DONE | build OK for `pc_control` AND `basic_connect` (component-level path); `node --check` x6; flashed COM9: `/` = 18.8 KB with all 41 element ids + 9 mon-cards, theme CSS/space.js/ui.js immutable 200 (query-stripped URLs), `/pc` = 50 KB using `/ml/static/`, `/pc/settings` + `/pc/security` + `/api/*` 200; `/pc/static/*` and unknown asset names 404 |
 
 ## S6 details (space scene)
 
@@ -69,7 +74,8 @@ configure modal on `/pc`.
 
 ## How to preview
 
-1. Flash `examples/pc_control` and open `http://<vpn-ip>/pc` (control deck),
+1. Flash `examples/pc_control` and open `http://<vpn-ip>/` (component config
+   page, now ISUI-themed), `http://<vpn-ip>/pc` (control deck),
    `/pc/settings`, `/pc/security`.
 2. Set the API token (banner or `/pc#t=TOKEN`) to use mutations.
 3. Interface settings (topbar sliders icon on `/pc`) toggles blur/parallax

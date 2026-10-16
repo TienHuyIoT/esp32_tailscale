@@ -15,6 +15,7 @@ set(SRCS
     "src/ml_zerocopy.c"
     "src/ml_net_switch.c"
     "src/ml_config_httpd.c"
+    "src/ml_ui.c"
     "src/ml_prov.c"
 )
 
@@ -65,6 +66,9 @@ idf_component_register(
     REQUIRES ${REQUIRES}
     PRIV_REQUIRES
         wireguard_lwip
+        # esp_app_format: ml_ui.c builds the /ml/static/* asset URL version
+        # from esp_app_get_description() (firmware version + build date/time).
+        esp_app_format
 )
 
 set_source_files_properties(src/nacl_box.c
