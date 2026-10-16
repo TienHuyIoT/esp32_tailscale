@@ -115,6 +115,8 @@ static esp_err_t send_ui_page(httpd_req_t *req, const char *title,
     httpd_resp_sendstr_chunk(req, "<script>");
     httpd_resp_sendstr_chunk(req, PCCTL_UI_JS);
     httpd_resp_sendstr_chunk(req, "</script><script>");
+    httpd_resp_sendstr_chunk(req, PCCTL_UI_SPACE_JS);
+    httpd_resp_sendstr_chunk(req, "</script><script>");
     httpd_resp_sendstr_chunk(req, script);
     httpd_resp_sendstr_chunk(req, "</script></body></html>");
     return httpd_resp_sendstr_chunk(req, NULL);

@@ -195,3 +195,26 @@ ON/OFF is rejected for disabled channels and NC pins. The API reports the
 COMMANDED state only - there is no relay contact feedback. See
 docs/PC_CONTROLLER.md -> "Relay control" for the full contract and the
 relay-module hardware notes (trigger polarity, AC/DC rating, isolation).
+
+## Interface theme (ISUI Space scene)
+
+All three embedded pages share the ISUI dark-glass theme
+(`main/pc_ui_theme.h`). The **Space scene** (Ætherium + Galaxy Drift, adapted
+from `docs/design-standard/ISUI_Web_Design_Kit_v2/reference/ISUI_SPACE_SCENE_REFERENCE.html`)
+adds: a WebGL nebula/starfield backdrop (own fragment shader, no external
+libraries), a WebGL prism backdrop + a WebGL power-orb sphere with orbit
+rings (raw WebGL1, ported from the reference), the CSS planetary scene
+(giant / ringed / moon / distant + streaks), pointer-driven 2D tilt on
+desktop, and depth-styled glass cards.
+
+- Space is the default; `/pc` -> Interface Settings (sliders icon) has a
+  **"Space scene"** switch to return to the flat **Glass classic** look
+  (stored per browser in `localStorage` as `pcctl_ui_scene`). The Scene,
+  Glass-blur and Parallax toggles are local preferences - never sent to the
+  device.
+- Fallbacks: `prefers-reduced-motion` renders static (CSS animations off,
+  WebGL drawn once); browsers without WebGL fall back to a lightweight
+  2D-canvas starfield; WebGL is paused while the tab is hidden and disposed
+  when switching to Glass.
+- The reference is a visual guide: no demo behavior was copied - every
+  control stays wired to the real APIs.

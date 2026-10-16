@@ -14,6 +14,31 @@ configure modal on `/pc`.
 | S3 | `/pc/settings` (same shell; all save/load flows preserved) | DONE | build OK; page served 50 KB; `node --check` OK |
 | S4 | `/pc/security` (same shell; login/token/credentials flows preserved) | DONE | build OK; page served 41 KB; `node --check` OK |
 | S5 | Hardware verification + docs + commit | DONE | flashed COM9; see below |
+| S6 | Space scene (Ætherium + Galaxy Drift) from `reference/ISUI_SPACE_SCENE_REFERENCE.html`, full-WebGL port (user choice), Space/Glass toggle | DONE | branch `feat/isui-space-scene`; build OK; `node --check` x5; flashed COM9; pages served 116/90/81 KB with scene markers; API regression green |
+
+## S6 details (space scene)
+
+- Ported: effective-final CSS of the (multi-pass) reference, scoped under
+  `html.scene-space`: obsidian/neon glass, card bevel + bottom extrusion,
+  hover lift, pointer tilt + translateZ layers, planets (giant/ringed/moon/
+  distant + atmosphere/clouds/streaks), galaxy body background, alienPulse.
+  NOTE: the reference's tilted grid floor + vignette were deliberately NOT
+  ported - its final pass hides them (`display:none`); only the rendered
+  result was reproduced.
+- Ported JS (`PCCTL_UI_SPACE_JS`): galaxy WebGL fragment-shader nebula +
+  star layers + flight streaks (verbatim shader) with a 2D-canvas starfield
+  fallback; raw-WebGL prism backdrop (cubes/torus/cuboids) and power-orb
+  sphere + 3 orbit rings (own matrix/mesh code, no libraries); scene DOM
+  injection (planets/canvases), initial state + toggle via
+  `isuiSetScene('space'|'glass')` (localStorage `pcctl_ui_scene`,
+  default Space); Interface Settings gains a "Space scene" switch on /pc.
+- Deviations from the reference (documented): galaxy RAF pauses while the
+  tab is hidden (reference only pauses the prism renderer); WebGL contexts
+  are disposed (`WEBGL_lose_context`) when switching back to Glass; each
+  canvas fails independently (settings/security pages have no orb canvas).
+- Not verified here: visual quality / FPS are hardware-eyeball checks
+  (no browser automation in scope); reduced-motion OS setting and the
+  Space<->Glass switch need a human pass.
 
 ## Hardware verification executed (device on COM9, via LAN HTTP)
 

@@ -76,7 +76,7 @@ static const char PCCTL_PAGE_MARKUP[] = R"PCM(
                 <button class="soft-btn" id="q-WAKE_UP" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v9l6 3"/><circle cx="12" cy="12" r="9"/></svg>Wake Up</button>
               </div>
             </div>
-            <div class="power-orb" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2v10"/><path d="M6.1 5.8a8 8 0 1 0 11.8 0"/></svg></div>
+            <div class="power-orb" aria-hidden="true"><svg class="power-fallback" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2v10"/><path d="M6.1 5.8a8 8 0 1 0 11.8 0"/></svg></div>
           </div>
         </article>
         <article class="glass metric-panel">
@@ -164,6 +164,7 @@ static const char PCCTL_PAGE_MARKUP[] = R"PCM(
 <div class="modal-backdrop" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="uiSetTitle"><div class="modal">
   <div class="modal-head"><h3 id="uiSetTitle">Interface settings</h3><button class="icon-btn" id="settingsX" type="button" aria-label="Close">&#10005;</button></div>
   <div class="settings-list">
+    <div class="setting-row"><div><strong>Space scene</strong><small>Galaxy, planets, prism glass and the WebGL orb (Space / Glass classic)</small></div><button type="button" class="switch" id="sceneSwitch" role="switch" aria-checked="true" aria-label="Toggle space scene"><span></span></button></div>
     <div class="setting-row"><div><strong>Parallax depth</strong><small>Subtle pointer movement on desktop</small></div><button type="button" class="switch" id="parallaxSwitch" role="switch" aria-checked="true" aria-label="Toggle parallax"><span></span></button></div>
     <div class="setting-row"><div><strong>Glass blur</strong><small>Translucent card backdrop effects</small></div><button type="button" class="switch" id="blurSwitch" role="switch" aria-checked="true" aria-label="Toggle glass blur"><span></span></button></div>
   </div>
@@ -772,6 +773,7 @@ function applyHashToken(){
 /* interface settings modal (local UI preferences only) */
 function openUiSettings(){
   const p = isuiGetPrefs();
+  setSwitch($('sceneSwitch'), isuiGetScene() !== 'glass');
   setSwitch($('parallaxSwitch'), p.parallax);
   setSwitch($('blurSwitch'), p.blur);
   $('settingsModal').classList.add('open');
@@ -788,6 +790,11 @@ $('parallaxSwitch').addEventListener('click', function(){
 $('blurSwitch').addEventListener('click', function(){
   const on = !switchOn(this); setSwitch(this, on); isuiSetBlur(on);
   isuiToast('Glass blur ' + (on ? 'enabled' : 'disabled'));
+});
+$('sceneSwitch').addEventListener('click', function(){
+  const on = !switchOn(this); setSwitch(this, on);
+  isuiSetScene(on ? 'space' : 'glass');
+  isuiToast('Scene: ' + (on ? 'Space' : 'Glass classic'));
 });
 document.addEventListener('keydown', function(e){
   if (e.key === 'Escape') { closeModal(); closeTok(); closeRelayConfig(); closeUiSettings(); }
