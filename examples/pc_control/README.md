@@ -229,7 +229,9 @@ desktop, and depth-styled glass cards.
   cacheable assets under `/ml/static/`, versioned by the firmware build id
   (every flash auto-busts the browser cache), so switching pages - including
   `/` and the `/pc` pages - only re-fetches a small HTML page (roughly
-  13-50 KB instead of 81-116 KB).
+  13-50 KB instead of 81-116 KB). Full technique notes (assets, lazy
+  two-phase WebGL boot, galaxy render budget, tilt fix): see
+  `docs/WEB_UI_PERFORMANCE.md`.
   The CSS scene paints immediately while the WebGL tiers start on idle
   (galaxy at ~30 fps with a reduced backing-store scale, prisms/orb a
   moment later), so shader compilation never blocks navigation.

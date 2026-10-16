@@ -819,6 +819,7 @@ if (now - last_heap_log > 60000) {  // Every 60 seconds
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — System design and task model
 - [docs/LARGE_TAILNET.md](docs/LARGE_TAILNET.md) — Scaling considerations for 300+ peers
 - [docs/TAILSCALE_REFERENCE.md](docs/TAILSCALE_REFERENCE.md) — Tailscale protocol reference patterns
+- [docs/WEB_UI_PERFORMANCE.md](docs/WEB_UI_PERFORMANCE.md) — Embedded web UI: cached assets, lazy WebGL boot, shared ISUI theme architecture
 
 ## Acknowledgments
 
