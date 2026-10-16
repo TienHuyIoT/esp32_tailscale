@@ -18,7 +18,7 @@ config page).
 | Page switches felt laggy / hung | Every page was one self-contained HTML document (116/90/81 KB) with the CSS and JS inline. Nothing was cacheable, so every navigation re-downloaded, re-parsed and re-compiled the whole page. |
 | First paint stalled on the Space scene | The WebGL tier (galaxy fragment shader, prism backdrop, power-orb) compiled its GLSL synchronously while the page painted. |
 | GPU constantly busy | Full-screen nebula rendered at full `devicePixelRatio` at 60 fps, plus a full-screen `alienPulse` CSS filter animation running forever. |
-| Relay cards looked tilted / unbalanced after a reload | The scene CSS shows the static "deck" skew (`rotateX(8deg)`) until the tilt module marks cards with `data-tilt` - which only happened on the first `pointermove`. |
+| Relay cards looked tilted / unbalanced after a reload | The scene CSS carried a static "deck" skew (`perspective(1250px) rotateX(8deg)`); `d9c80a4` flattened it for **fine pointers only**, so a coarse-pointer tablet (iPad, >760px) kept the skew with no tilt module to flatten it - fixed by making flat the default on every pointer (§5). |
 | Two different visual languages, duplicated theme | The component config page had its own GitHub-dark inline CSS; the ISUI theme was duplicated inside the pc_control example. |
 
 ## 2. One theme, served as cacheable assets
@@ -94,23 +94,32 @@ lifecycle behavior:
 - The reference demo's heavier passes (tilted grid floor, vignette) were
   never ported because the reference itself hides them in its final pass.
 
-## 5. Cards flat on load (tilt fix, `d9c80a4`)
+## 5. Cards flat on every pointer (tilt fix, `d9c80a4` + iPad follow-up)
 
 The scene CSS gave cards a static skew (`perspective(1250px) rotateX(8deg)`)
-that only flattened once the tilt module started tracking the pointer - so a
-fresh reload showed unbalanced cards until the first mouse move. Fixed in
-two layers, both cheap:
+that was never meant to stand alone: the tilted "deck" look belongs to the
+fine-pointer tilt module, which marks cards with `data-tilt`. `d9c80a4`
+flattened cards from the first paint, but **only under `@media (pointer:fine)`**
+- so a coarse-pointer tablet (iPad, width > 760px) kept the static 8° skew
+forever (the module never starts there) and the Relay Control row looked
+skewed, compressed and unbalanced after every reload.
 
-- CSS: under `@media (pointer:fine)` the three card families
-  (`.action-card`, `.relay-card`, `.metric-panel`) are flat from the very
-  first paint.
-- JS: the tilt module marks every matching card with `data-tilt` at start
-  (reference behavior) and exposes `window.isuiTiltRefresh()`;
-  `renderRelays()` calls it after rebuilding the relay grid, so
-  dynamically rendered cards are flat immediately, before any hover.
+Final shape (single source of truth):
 
-Touch behavior is unchanged: <=760px cards stay flattened statically, and
-without a fine pointer the tilt module never starts.
+- CSS: the card families (`.action-card`, `.relay-card`, `.metric-panel`) carry
+  **no** transform at all now - flat on every pointer type from the first paint
+  - and `transform-style: preserve-3d` lives **inside the fine-pointer tilt
+  block**, so touch devices never build a 3D rendering context.
+- CSS: the hover lift with 3D tilt moved into
+  `@media (hover:hover) and (pointer:fine) and (prefers-reduced-motion:no-preference)`;
+  on iOS a tap leaves a sticky `:hover`, which previously froze a card tilted.
+- JS: unchanged - the tilt module marks `data-tilt` at start (reference
+  behavior) and exposes `window.isuiTiltRefresh()`; `renderRelays()` calls it
+  after rebuilding the relay grid, so dynamically rendered cards are stable
+  immediately, before any hover.
+
+Touch behavior: flat and stable at every width; `<=760px` and
+`prefers-reduced-motion` keep their extra flattening guards.
 
 ## 6. The config page on the shared theme (`0b1dfea`)
 
