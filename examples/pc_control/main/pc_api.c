@@ -152,9 +152,16 @@ static esp_err_t handler_static(httpd_req_t *req) {
     const char *body = NULL;
     const char *type = NULL;
     if (rest) {
-        if (strcmp(rest, "theme.css") == 0) { body = PCCTL_UI_CSS; type = "text/css"; }
-        else if (strcmp(rest, "ui.js") == 0) { body = PCCTL_UI_JS; type = "application/javascript"; }
-        else if (strcmp(rest, "space.js") == 0) { body = PCCTL_UI_SPACE_JS; type = "application/javascript"; }
+        /* req->uri includes the query string (?v=... cache buster): compare
+         * only the part before '?' / '#'. */
+        size_t len = strcspn(rest, "?#");
+        if (len == 9 && strncmp(rest, "theme.css", len) == 0) {
+            body = PCCTL_UI_CSS; type = "text/css";
+        } else if (len == 5 && strncmp(rest, "ui.js", len) == 0) {
+            body = PCCTL_UI_JS; type = "application/javascript";
+        } else if (len == 8 && strncmp(rest, "space.js", len) == 0) {
+            body = PCCTL_UI_SPACE_JS; type = "application/javascript";
+        }
     }
     if (!body) {
         return send_error(req, "404 Not Found", "not_found", NULL);
