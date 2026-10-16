@@ -117,14 +117,17 @@ static void drive_all_idle(const pc_relay_snapshot_t *snap) {
  * parked as NC + disabled instead of rejecting the whole configuration
  * (recovery without erasing NVS). Cross-checks keep relay pins unique and
  * disjoint from the PC-control function pins. */
-static void load_blob(const pc_relay_blob_t *blob) {
+static void load_blob(const pc_relay_blob_t *blob, int slots) {
     pc_config_snapshot_t cfg;
     pc_config_get(&cfg);
 
-    s_snap.channel_count = blob->channel_count;
+    /* channel_count can only refer to slots actually present in the blob */
+    s_snap.channel_count = (blob->channel_count > (uint8_t)slots)
+                               ? (uint8_t)slots : blob->channel_count;
     uint8_t recovered = 0;
     for (int i = 0; i < CONFIG_PCCTL_RELAY_MAX_CHANNELS; i++) {
         pc_relay_channel_t *ch = &s_snap.channels[i];
+        if (i >= slots) continue;   /* not stored - keep load_defaults() values */
         const pc_relay_blob_channel_t *bc = &blob->channels[i];
         bool ok = blob_name_ok(bc->name) &&
                   (bc->enabled == 0 || bc->enabled == 1) &&
@@ -173,13 +176,25 @@ void pc_relay_init(void) {
     }
 
     pc_relay_blob_t blob;
+    memset(&blob, 0, sizeof(blob));
     size_t len = sizeof(blob);
     esp_err_t err = s_nvs_ok ? nvs_get_blob(s_nvs, NVS_KEY_RELAYS, &blob, &len)
                              : ESP_ERR_NVS_NOT_FOUND;
-    if (err == ESP_OK && len == sizeof(blob) &&
-        blob.version == RELAY_BLOB_VERSION &&
-        blob.channel_count <= CONFIG_PCCTL_RELAY_MAX_CHANNELS) {
-        load_blob(&blob);
+    /* The v1 blob is a header (version + channel_count) followed by N packed
+     * channel slots. Blobs written when CONFIG_PCCTL_RELAY_MAX_CHANNELS was
+     * smaller are accepted as well (their missing slots keep the defaults),
+     * so raising the channel limit never discards an existing configuration;
+     * nothing is written back until the next explicit save. */
+    size_t hdr = sizeof(blob.version) + sizeof(blob.channel_count);
+    size_t slot = sizeof(blob.channels[0]);
+    int slots = 0;
+    if (err == ESP_OK && len >= hdr && blob.version == RELAY_BLOB_VERSION &&
+        (len - hdr) % slot == 0 &&
+        (len - hdr) / slot <= CONFIG_PCCTL_RELAY_MAX_CHANNELS) {
+        slots = (int)((len - hdr) / slot);
+    }
+    if (slots > 0) {
+        load_blob(&blob, slots);
     } else if (err == ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGI(TAG, "no relay configuration in NVS - 0 channels until configured");
     } else {

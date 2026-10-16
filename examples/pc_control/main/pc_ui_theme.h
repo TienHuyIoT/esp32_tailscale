@@ -220,6 +220,8 @@ body.no-blur .sidebar{background:rgba(11,24,41,.97)}
 .setting-row small{color:#8199b2;font-size:10px;display:block;margin-top:3px}
 .chkrow{display:flex;gap:10px;align-items:center;padding:7px 0;font-size:13px;cursor:pointer}
 .chkrow input{width:16px;height:16px;accent-color:#22d3ee}
+.del-btn{border:1px solid rgba(251,113,133,.35);background:rgba(251,113,133,.08);color:#fda4af;border-radius:9px;padding:7px 10px;font-size:11px;transition:.2s;flex:0 0 auto}
+.del-btn:hover{background:rgba(251,113,133,.16)}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .toast{position:fixed;right:24px;bottom:24px;z-index:40;max-width:min(360px,calc(100vw - 32px));padding:13px 16px;border:1px solid rgba(103,232,249,.24);background:rgba(10,25,42,.92);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);box-shadow:var(--shadow);border-radius:15px;color:#dff9ff;font-size:13px;opacity:0;transform:translateY(12px);pointer-events:none;transition:.25s}
 .toast.show{opacity:1;transform:translateY(0)}

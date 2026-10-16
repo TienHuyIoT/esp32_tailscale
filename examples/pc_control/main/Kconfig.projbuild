@@ -98,7 +98,7 @@ menu "Example Configuration"
 
         config PCCTL_RELAY_MAX_CHANNELS
             int "Maximum number of relay channels"
-            default 8
+            default 16
             range 1 16
             help
                 Firmware limit for the configurable relay channel count

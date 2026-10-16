@@ -401,7 +401,7 @@ Implemented per `docs/RELAY_CONTROL.md`; module: `pc_relay.[ch]`.
   `enabled`, `gpio` (NC or a board-allowlisted pin), `active_level`
   (Active HIGH/LOW - the level driven to energize the relay) and a fixed
   safe `startup_policy` (OFF; other values are rejected).
-- Channel count 0..`CONFIG_PCCTL_RELAY_MAX_CHANNELS` (default 8, range
+- Channel count 0..`CONFIG_PCCTL_RELAY_MAX_CHANNELS` (default 16, range
   1-16) is set in `/pc/settings` -> "Relay channels". Stored in the
   existing NVS namespace `pc_ctl`, key `relays` (versioned blob), written
   only on explicit saves; a failed write changes nothing.
@@ -418,6 +418,10 @@ Implemented per `docs/RELAY_CONTROL.md`; module: `pc_relay.[ch]`.
     and a reboot never restores an energized relay;
   - `state` is the COMMANDED logic level only - there is no relay contact
     feedback, so the physical load state is never claimed.
+  - channels can be deleted (`{"delete_channel":N}` or the two-step Delete
+    buttons on `/pc` and `/pc/settings`): the channels after it shift up by
+    one and its pin becomes assignable again; deletion runs through the same
+    validated apply path (all relays are driven OFF).
 - Invalid NVS entries are recovered per channel (parked as NC + disabled)
   without erasing anything; unknown blob versions fall back to defaults.
 
@@ -439,6 +443,11 @@ Implemented per `docs/RELAY_CONTROL.md`; module: `pc_relay.[ch]`.
          400 invalid_field | invalid_config
          409 gpio_conflict | unsafe_reduction
          500 nvs_error
+
+    POST /api/v1/relays/config {"delete_channel":N}      delete channel N
+         200 {"ok":true,"deleted":N,"relays":{...}} - the channels after N
+             shift up by one, the tail slot is cleared (standalone value;
+             combining with channel_count/channels is rejected 400)
 
 Explicit ON/OFF commands (never a toggle) are idempotent: retried
 requests cannot reverse the intended state. The relay block also appears

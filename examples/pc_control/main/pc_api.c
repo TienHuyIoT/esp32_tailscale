@@ -1090,6 +1090,78 @@ static esp_err_t handler_post_relays(httpd_req_t *req) {
     return send_json_status(req, NULL, resp);
 }
 
+/* Delete one relay channel: the channels after it shift up by one, the tail
+ * slot is cleared and the channel count shrinks. Runs through the very same
+ * config-patch path, so every rule (pin allowlist, uniqueness, pc-control
+ * overlap, safe-start all-OFF apply, single NVS write) is enforced. */
+static esp_err_t delete_relay_channel(httpd_req_t *req, int id) {
+    /* static: multi-KB snapshot/patch; single serialized httpd task */
+    static pc_relay_snapshot_t snap;
+    static pc_relay_config_patch_t patch;
+    pc_relay_get(&snap);
+    if (id < 0 || id >= snap.channel_count) {
+        return send_error(req, "404 Not Found", "unknown_channel", NULL);
+    }
+
+    memset(&patch, 0, sizeof(patch));
+    patch.set_channel_count = true;
+    patch.channel_count = (uint8_t)(snap.channel_count - 1);
+    for (int i = id; i < snap.channel_count - 1; i++) {
+        patch.set_channels[i] = true;
+        pc_relay_channel_patch_t *p = &patch.channels[i];
+        const pc_relay_channel_t *src = &snap.channels[i + 1];
+        snprintf(p->name, sizeof(p->name), "%s", src->name);
+        p->set_name = true;
+        p->enabled = src->enabled;
+        p->set_enabled = true;
+        p->gpio = src->gpio;              /* -1 = NC */
+        p->set_gpio = true;
+        p->level = src->active_level;
+        p->set_level = true;
+        p->startup = src->startup_policy;
+        p->set_startup = true;
+    }
+    /* The tail slot must be explicitly cleared so the reduction check passes
+     * (the firmware never silently drops a GPIO mapping otherwise). */
+    patch.set_channels[snap.channel_count - 1] = true;
+    pc_relay_channel_patch_t *tail = &patch.channels[snap.channel_count - 1];
+    memset(tail, 0, sizeof(*tail));
+    tail->set_name = true;               /* empty name */
+    tail->set_enabled = true;            /* false */
+    tail->set_gpio = true;
+    tail->gpio = -1;                     /* NC */
+    tail->set_level = true;
+    tail->level = PC_CFG_LEVEL_HIGH;
+    tail->set_startup = true;
+    tail->startup = PC_RELAY_STARTUP_OFF;
+
+    esp_err_t err = pc_relay_config_apply(&patch);
+    if (err == ESP_ERR_NOT_ALLOWED) {
+        return send_error(req, "409 Conflict", "unsafe_reduction",
+                          "a channel being dropped still has a GPIO mapping or is enabled");
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_error(req, "409 Conflict", "gpio_conflict", NULL);
+    }
+    if (err == ESP_ERR_INVALID_ARG) {
+        return send_error(req, "400 Bad Request", "invalid_config", NULL);
+    }
+    if (err != ESP_OK) {
+        return send_error(req, "500 Internal Server Error", "nvs_error",
+                          esp_err_to_name(err));
+    }
+
+    cJSON *resp = cJSON_CreateObject();
+    if (!resp) return send_error(req, "500 Internal Server Error", "no_memory", NULL);
+    cJSON_AddBoolToObject(resp, "ok", true);
+    cJSON_AddNumberToObject(resp, "deleted", id);
+    cJSON *relays = relays_to_json(true);
+    if (relays) cJSON_AddItemToObject(resp, "relays", relays);
+    ESP_LOGI(TAG, "relay channel %d deleted (%u left, all driven OFF)",
+             id, (unsigned)(snap.channel_count - 1));
+    return send_json_status(req, NULL, resp);
+}
+
 /* ---------- POST /api/v1/relays/config ---------- */
 
 static esp_err_t handler_post_relays_config(httpd_req_t *req) {
@@ -1112,6 +1184,23 @@ static esp_err_t handler_post_relays_config(httpd_req_t *req) {
     cJSON *json = cJSON_Parse(body);
     free(body);
     if (!json) return send_error(req, "400 Bad Request", "invalid_json", NULL);
+
+    /* {"delete_channel": N} removes one channel and shifts the following
+     * channels up (standalone; combining with other config ops is rejected
+     * so the two intents can never be ambiguous). */
+    cJSON *del = cJSON_GetObjectItem(json, "delete_channel");
+    if (del) {
+        if (!cJSON_IsNumber(del) ||
+            cJSON_GetObjectItem(json, "channel_count") ||
+            cJSON_GetObjectItem(json, "channels")) {
+            cJSON_Delete(json);
+            return send_error(req, "400 Bad Request", "invalid_field",
+                              "delete_channel must be used alone");
+        }
+        int kid = (int)del->valuedouble;
+        cJSON_Delete(json);
+        return delete_relay_channel(req, kid);
+    }
 
     /* static: the patch is ~1 KB; keeps the httpd stack small (single
      * serialized httpd task - same rationale as the snapshot statics) */

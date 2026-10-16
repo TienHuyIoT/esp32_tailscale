@@ -158,7 +158,7 @@ static const char PCCTL_PAGE_MARKUP[] = R"PCM(
   </div>
   <p class="form-note">Validated and enforced by the firmware: allowlisted pins, unique across channels, never shared with a PC-control pin. Saving stores the configuration in NVS and drives every channel to its idle OFF level (safe start).</p>
   <p class="form-note" id="relayFormMsg" style="min-height:1em;color:#fda4af"></p>
-  <div class="modal-actions"><button class="soft-btn" id="relayCancel" type="button">Cancel</button><button class="primary-btn" id="relaySave" type="button">Save channel</button></div>
+  <div class="modal-actions"><button class="danger-btn" id="relayDelete" type="button" style="margin-right:auto">Delete channel</button><button class="soft-btn" id="relayCancel" type="button">Cancel</button><button class="primary-btn" id="relaySave" type="button">Save channel</button></div>
 </div></div>
 
 <div class="modal-backdrop" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="uiSetTitle"><div class="modal">
@@ -565,6 +565,9 @@ async function openRelayConfig(id){
   $('relayLogic').value = (c.active_level === 'low') ? 'low' : 'high';
   setSwitch($('relayEnabled'), !!c.enabled);
   $('relayFormMsg').textContent = '';
+  const d = $('relayDelete');
+  d.dataset.armed = '';
+  d.textContent = 'Delete channel';
   $('relayModal').classList.add('open');
   $('relayName').focus();
 }
@@ -574,6 +577,45 @@ $('relayX').addEventListener('click', closeRelayConfig);
 $('relayCancel').addEventListener('click', closeRelayConfig);
 $('relayModal').addEventListener('click', function(e){ if (e.target === $('relayModal')) closeRelayConfig(); });
 $('relaySave').addEventListener('click', saveRelayConfig);
+$('relayDelete').addEventListener('click', relayDeleteClick);
+async function relayDeleteClick(){
+  if (relaySaveBusy) return;
+  const id = parseInt($('relayId').value, 10);
+  if (isNaN(id)) return;
+  const btn = $('relayDelete');
+  if (btn.dataset.armed !== '1') {
+    btn.dataset.armed = '1';
+    btn.textContent = 'Confirm delete?';
+    $('relayFormMsg').textContent = 'Deletes this channel; the channels after it shift up. Click again within 4 s.';
+    setTimeout(function(){
+      if (btn.dataset.armed === '1') { btn.dataset.armed = ''; btn.textContent = 'Delete channel'; }
+    }, 4000);
+    return;
+  }
+  btn.dataset.armed = '';
+  btn.textContent = 'Delete channel';
+  relaySaveBusy = true;
+  $('relaySave').disabled = true;
+  $('relayFormMsg').textContent = 'Deleting...';
+  const r = await fetchJson('/api/v1/relays/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ delete_channel: id })
+  });
+  relaySaveBusy = false;
+  $('relaySave').disabled = false;
+  const j = r.json || {};
+  if (r.status === 200 && j.ok) {
+    closeRelayConfig();
+    isuiToast('Relay ' + (id + 1) + ' deleted - all relays driven OFF (safe start).');
+    log('relay ' + id + ' deleted', 'tx');
+    refresh();
+  } else if (r.status === 401) {
+    $('relayFormMsg').textContent = 'Rejected: API token missing or invalid.';
+    openTok();
+  } else {
+    $('relayFormMsg').textContent = 'Delete failed (' + r.status + '): ' + (j.detail || j.error || r.error || '?');
+  }
+}
 async function saveRelayConfig(){
   if (relaySaveBusy) return;
   const id = parseInt($('relayId').value, 10);
@@ -1017,7 +1059,10 @@ function buildRelayRows(n){
     const en = document.createElement('label'); en.className = 'chkrow'; en.style.margin = '0';
     en.innerHTML = '<input type="checkbox" id="re-' + i + '"' + (c.enabled ? ' checked' : '') + '><span>enabled</span>';
     const so = document.createElement('span'); so.className = 'relay-id'; so.textContent = 'startup: OFF';
-    row.appendChild(lbl); row.appendChild(name); row.appendChild(en); row.appendChild(sel); row.appendChild(lvl); row.appendChild(so);
+    const del = document.createElement('button'); del.type = 'button'; del.className = 'del-btn'; del.id = 'rd-' + i;
+    del.textContent = '\u2715'; del.title = 'Delete this channel (the channels after it shift up)';
+    del.addEventListener('click', function(){ relayRowDelete(i, del); });
+    row.appendChild(lbl); row.appendChild(name); row.appendChild(en); row.appendChild(sel); row.appendChild(lvl); row.appendChild(so); row.appendChild(del);
     list.appendChild(row);
   }
 }
@@ -1159,6 +1204,36 @@ async function saveRelays(){
   } else {
     $('relaySaveMsg').textContent = 'Save failed (' + r.status + '): ' +
       (j.detail || j.error || r.error || '?');
+  }
+}
+async function relayRowDelete(id, btn){
+  if (btn.dataset.armed !== '1') {
+    btn.dataset.armed = '1';
+    btn.textContent = '!';
+    $('relaySaveMsg').textContent = 'Click again within 4 s to delete Relay ' + (id + 1) + ' (the channels after it shift up).';
+    setTimeout(function(){
+      if (btn.dataset.armed === '1') { btn.dataset.armed = ''; btn.textContent = '\u2715'; }
+    }, 4000);
+    return;
+  }
+  btn.dataset.armed = '';
+  btn.textContent = '\u2715';
+  $('relaySaveMsg').textContent = 'Deleting...';
+  const r = await fetchJson('/api/v1/relays/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ delete_channel: id })
+  });
+  const j = r.json || {};
+  if (r.status === 200 && j.ok && j.relays) {
+    cfg.relays = j.relays;
+    renderRelaySection();
+    $('relaySaveMsg').textContent = 'Relay ' + (id + 1) + ' deleted - all relays were driven OFF (safe start).';
+    isuiToast('Relay ' + (id + 1) + ' deleted.');
+    log('relay ' + id + ' deleted', 'tx');
+  } else if (r.status === 401) {
+    $('relaySaveMsg').textContent = 'Rejected: API token missing or invalid - set it in the top card.';
+  } else {
+    $('relaySaveMsg').textContent = 'Delete failed (' + r.status + '): ' + (j.detail || j.error || r.error || '?');
   }
 }
 $('apiTokSave').addEventListener('click', async function(){

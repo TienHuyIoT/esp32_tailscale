@@ -191,7 +191,10 @@ Rules enforced in firmware: relay pins come from the board allowlist, are
 unique across channels and never overlap the PC-control function pins; a
 channel-count reduction that would drop a channel with a GPIO mapping or
 the Enable flag is rejected (clear the channel to NC + disabled first);
-ON/OFF is rejected for disabled channels and NC pins. The API reports the
+ON/OFF is rejected for disabled channels and NC pins. Channels can be
+deleted (two-step Delete in the /pc Configure modal and on every
+/pc/settings row): the following channels shift up and the freed pin
+becomes assignable again. Up to 16 channels (CONFIG_PCCTL_RELAY_MAX_CHANNELS). The API reports the
 COMMANDED state only - there is no relay contact feedback. See
 docs/PC_CONTROLLER.md -> "Relay control" for the full contract and the
 relay-module hardware notes (trigger polarity, AC/DC rating, isolation).

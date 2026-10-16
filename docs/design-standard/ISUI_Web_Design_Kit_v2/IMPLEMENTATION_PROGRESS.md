@@ -15,6 +15,7 @@ configure modal on `/pc`.
 | S4 | `/pc/security` (same shell; login/token/credentials flows preserved) | DONE | build OK; page served 41 KB; `node --check` OK |
 | S5 | Hardware verification + docs + commit | DONE | flashed COM9; see below |
 | S6 | Space scene (Ætherium + Galaxy Drift) from `reference/ISUI_SPACE_SCENE_REFERENCE.html`, full-WebGL port (user choice), Space/Glass toggle | DONE | branch `feat/isui-space-scene`; build OK; `node --check` x5; flashed COM9; pages served 116/90/81 KB with scene markers; API regression green |
+| S7 | Relay channels: max 16 + per-channel delete (NVS length-driven migration, `delete_channel` API with shift, Delete buttons on /pc modal + /pc/settings rows) | DONE | build+flash; existing config preserved across the 8->16 limit bump; add/shift/delete round-trip + reboot persistence + error cases (404/400) verified on the device; 2 transcription bugs caught & fixed by those tests |
 
 ## S6 details (space scene)
 
